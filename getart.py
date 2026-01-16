@@ -14,10 +14,15 @@ import argparse
 import sys
 from datetime import datetime
 
+
+class RateLimitExceededError(RuntimeError):
+    """Raised when Apple Music continues throttling after enforced backoff."""
+
+
 class AppleMusicArtworkDownloader:
     """Self-contained Apple Music artwork downloader"""
 
-    def __init__(self, verbose: bool = False, throttle: float = 0):
+    def __init__(self, verbose: bool = False, throttle: float = 1):
         """
         Initialize the downloader.
 
@@ -39,12 +44,38 @@ class AppleMusicArtworkDownloader:
         # HTTP settings
         self.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.55 Safari/537.36"
         self.THROTTLED_HTTP_CODES = [403, 429]
+        self.MAX_RETRIES = 5
+        self.rate_limit_delay = 0.0
+        self.rate_limit_escalated = False
 
         if self.verbose:
             print(f"Initialized with size={self.ART_SIZE}, quality={self.ART_QUALITY}")
 
+    @property
+    def current_delay(self) -> float:
+        """Return the effective delay to honor between requests."""
+        return max(self.throttle, self.rate_limit_delay)
+
+    def _enter_rate_limit_mode(self, url: str) -> bool:
+        """Handle first-time rate limiting, enforcing five second delays."""
+        if self.rate_limit_escalated:
+            return False
+
+        wait_time = 5.0
+        self.rate_limit_escalated = True
+        self.rate_limit_delay = max(self.rate_limit_delay, wait_time)
+        if self.verbose:
+            host = urlparse(url).netloc
+            print(
+                f"Apple Music throttled responses from {host}; waiting {wait_time:.0f}s and enabling {wait_time:.0f}s inter-request delays"
+            )
+        time.sleep(wait_time)
+        return True
+
     def _urlopen_safe(self, url: str) -> bytes:
-        """Make HTTP request with rate-limiting handling"""
+        """Make HTTP request with bounded retry/backoff handling"""
+        attempts = 0
+
         while True:
             try:
                 req = Request(url)
@@ -53,13 +84,25 @@ class AppleMusicArtworkDownloader:
                 return response.read()
             except HTTPError as e:
                 if e.code in self.THROTTLED_HTTP_CODES:
+                    if self._enter_rate_limit_mode(url):
+                        continue
+                    raise RateLimitExceededError(
+                        "Apple Music is still throttling requests after enforced delay. Please resume later."
+                    )
+
+                attempts += 1
+                if attempts <= self.MAX_RETRIES:
+                    wait_time = max(self.current_delay, 1.0) * (2 ** (attempts - 1))
                     if self.verbose:
-                        print(f"Rate limited by {urlparse(url).netloc}, waiting {self.throttle} seconds...")
-                    time.sleep(self.throttle)
-                else:
-                    if self.verbose:
-                        print(f"HTTP Error {e.code} for {url}: {e.reason}")
-                    raise e
+                        print(
+                            f"HTTP Error {e.code} for {url}: {e.reason}. Retrying in {wait_time:.1f}s"
+                        )
+                    time.sleep(wait_time)
+                    continue
+
+                if self.verbose:
+                    print(f"HTTP Error {e.code} for {url}: {e.reason}")
+                raise
             except Exception as e:
                 if self.verbose:
                     print(f"Error accessing {url}: {str(e)}")
@@ -84,69 +127,103 @@ class AppleMusicArtworkDownloader:
             if self.verbose:
                 print(f"Failed to parse JSON response: {e}")
             return {}
+        except RateLimitExceededError:
+            raise
         except Exception as e:
             if self.verbose:
                 print(f"Error querying iTunes: {e}")
             return {}
 
-    def _find_best_artwork_url(self, results: list, artist: str, album: str = None) -> str:
+    def _find_best_artwork_url(self, results: list, artist: str, album: str = None,
+                               title: str = None) -> str:
         """Find the best matching artwork URL from search results"""
-        best_art_url = None
+        if not results:
+            return None
+
         artist_lower = artist.lower()
+        album_lower = album.lower() if album else None
+        title_lower = title.lower() if title else None
 
-        if album:
-            album_lower = album.lower()
+        def normalize(text: str) -> str:
+            return (text or "").strip().lower()
 
-            # Look for exact album match first
+        def is_overlap(target: str, candidate: str) -> bool:
+            return bool(target and candidate and (
+                target == candidate or
+                target in candidate or
+                candidate in target
+            ))
+
+        def format_art_url(raw_url: str) -> str:
+            if not raw_url:
+                return None
+            return raw_url.replace('100x100bb', self.file_suffix)
+
+        def artist_matches(result_artist_lower: str) -> bool:
+            return is_overlap(artist_lower, result_artist_lower)
+
+        if album_lower:
+            partial_album_match = None
+            first_artist_match = None
+
             for result in results:
-                result_artist = result.get('artistName', '').lower()
-                result_album = result.get('collectionName', '').lower()
+                result_artist_raw = result.get('artistName', '')
+                result_artist_lower = normalize(result_artist_raw)
 
-                # Check artist match (partial or exact)
-                artist_match = (artist_lower in result_artist or
-                               result_artist in artist_lower or
-                               artist_lower == result_artist)
-
-                if not artist_match:
+                if not artist_matches(result_artist_lower):
                     continue
 
-                # Check album match
-                album_match = (album_lower in result_album or
-                              result_album in album_lower)
+                art_url = format_art_url(result.get('artworkUrl100', ''))
+                if not art_url:
+                    continue
 
-                if album_match:
-                    art_url = result.get('artworkUrl100', '')
-                    if art_url:
-                        # Get highest resolution version
-                        best_art_url = art_url.replace('100x100bb', self.file_suffix)
+                result_album_raw = result.get('collectionName', '')
+                result_album_lower = normalize(result_album_raw)
 
-                        # If exact album match, use this one
-                        if album_lower == result_album:
-                            if self.verbose:
-                                print(f"Found exact album match: {result_artist} - {result_album}")
-                            break
-
-            # If no album match found, try without album filter
-            if not best_art_url and len(results) > 0:
-                first_result = results[0]
-                art_url = first_result.get('artworkUrl100', '')
-                if art_url:
-                    best_art_url = art_url.replace('100x100bb', self.file_suffix)
+                if album_lower == result_album_lower:
                     if self.verbose:
-                        print("No album match found, using first result")
-        else:
-            # No album specified, use first artist match
-            for result in results:
-                result_artist = result.get('artistName', '').lower()
-                if (artist_lower in result_artist or
-                    result_artist in artist_lower or
-                    artist_lower == result_artist):
-                    art_url = result.get('artworkUrl100', '')
-                    if art_url:
-                        best_art_url = art_url.replace('100x100bb', self.file_suffix)
-                        break
+                        print(f"Found exact album match: {result_artist_raw} - {result_album_raw}")
+                    return art_url
 
-        return best_art_url
+                if not partial_album_match and is_overlap(album_lower, result_album_lower):
+                    partial_album_match = art_url
+
+                if not first_artist_match:
+                    first_artist_match = art_url
+
+            return partial_album_match or first_artist_match
+
+        # No album specified; match on artist and optionally title
+        partial_title_match = None
+        first_artist_match = None
+
+        for result in results:
+            result_artist_raw = result.get('artistName', '')
+            result_artist_lower = normalize(result_artist_raw)
+
+            if not artist_matches(result_artist_lower):
+                continue
+
+            art_url = format_art_url(result.get('artworkUrl100', ''))
+            if not art_url:
+                continue
+
+            if title_lower:
+                result_title_raw = result.get('trackName', '')
+                result_title_lower = normalize(result_title_raw)
+
+                if title_lower == result_title_lower:
+                    if self.verbose:
+                        print(f"Found exact track match: {result_artist_raw} - {result_title_raw}")
+                    return art_url
+
+                if not partial_title_match and is_overlap(title_lower, result_title_lower):
+                    partial_title_match = art_url
+
+            if not first_artist_match:
+                first_artist_match = art_url
+
+        return partial_title_match or first_artist_match
 
     def get_artwork(self, artist: str, album: str = None, title: str = None) -> bytes:
         """
@@ -176,7 +253,7 @@ class AppleMusicArtworkDownloader:
             print(f"Found {len(results)} result(s)")
 
         # Find the best matching artwork URL
-        art_url = self._find_best_artwork_url(results, artist, album)
+        art_url = self._find_best_artwork_url(results, artist, album, title)
 
         if not art_url:
             if self.verbose:
@@ -194,6 +271,8 @@ class AppleMusicArtworkDownloader:
                 print(f"Successfully downloaded {len(image_data):,} bytes")
 
             return image_data
+        except RateLimitExceededError:
+            raise
         except Exception as e:
             if self.verbose:
                 print(f"Error downloading artwork: {e}")
@@ -265,6 +344,13 @@ def parse_folder_name(folder_name: str):
     album = re.sub(r'\s+', ' ', album)
 
     return artist, album
+
+
+def sanitize_filename(name: str) -> str:
+    """Make filename safe for most filesystems while preserving readability."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+    return sanitized or "xfolder.jpg"
 
 
 class ProcessingLogger:
@@ -376,6 +462,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         print(f"Previously successful: {len(logger.successful_folders)} folder(s)")
     print("-" * 60)
 
+    rate_limit_error = None
+
     for i, folder in enumerate(subfolders, 1):
         folder_path = os.path.join(directory, folder)
         print(f"[{i}/{total}] Processing: {folder}")
@@ -408,33 +496,156 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         if verbose:
             print(f"  Parsed: Artist='{artist}', Album='{album}'")
 
-        # Create the subfolder if it doesn't exist (it should, but just in case)
+        # Validate that the folder exists before writing
         if not os.path.exists(folder_path):
-            os.makedirs(folder_path, exist_ok=True)
+            print(f"  SKIPPED: Folder '{folder_path}' does not exist")
+            failed += 1
+            continue
 
         # Download and save artwork
-        if downloader.save_artwork(
-            artist=artist,
-            album=album,
-            filename=output_path
-        ):
-            success += 1
-            print(f"  SUCCESS: Artwork saved to {output_path}")
-            # Only log successful completions
-            logger.log_success(folder_path, artist, album, output_path)
-        else:
-            failed += 1
-            print(f"  FAILED: Could not find artwork for {artist} - {album}")
-            # Do NOT log failures - they can be retried next run
+        try:
+            if downloader.save_artwork(
+                artist=artist,
+                album=album,
+                filename=output_path
+            ):
+                success += 1
+                print(f"  SUCCESS: Artwork saved to {output_path}")
+                # Only log successful completions
+                logger.log_success(folder_path, artist, album, output_path)
+            else:
+                failed += 1
+                print(f"  FAILED: Could not find artwork for {artist} - {album}")
+                # Do NOT log failures - they can be retried next run
+        except RateLimitExceededError as exc:
+            print("  STOPPED: Apple Music is still throttling requests. Halting batch early.")
+            rate_limit_error = exc
+            break
 
         # Add a small delay between requests to be polite
-        if throttle > 0:
-            time.sleep(throttle)
+        delay = downloader.current_delay
+        if delay > 0:
+            time.sleep(delay)
+
+    if rate_limit_error:
+        print("Processing interrupted by rate limiting; summary reflects completed folders only.")
 
     print("-" * 60)
     print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
     if os.path.exists(logger.log_file):
         print(f"Success log: {logger.log_file}")
+
+    if rate_limit_error:
+        print("Processing stopped early due to continued rate limiting. Please retry later.")
+        raise rate_limit_error
+
+    return {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "skipped": skipped
+    }
+
+
+def process_directory_file(list_file: str, verbose: bool = False, throttle: float = 0,
+                           overwrite: bool = False, ignore_log: bool = False) -> dict:
+    """Process directories enumerated inside a text file."""
+    list_file = os.path.abspath(list_file)
+
+    if not os.path.exists(list_file):
+        print(f"ERROR: List file '{list_file}' does not exist")
+        return {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+
+    downloader = AppleMusicArtworkDownloader(verbose=verbose, throttle=throttle)
+
+    raw_lines = []
+    with open(list_file, 'r', encoding='utf-8') as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            raw_lines.append(line)
+
+    if not raw_lines:
+        print(f"ERROR: List file '{list_file}' does not contain any directory entries")
+        return {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+
+    total = len(raw_lines)
+    cwd = os.getcwd()
+    logger = ProcessingLogger(cwd)
+    success = 0
+    failed = 0
+    skipped = 0
+    rate_limit_error = None
+
+    print(f"Loaded {total} path(s) from '{list_file}'")
+    print("-" * 60)
+
+    for idx, entry in enumerate(raw_lines, 1):
+        dir_path = os.path.abspath(entry)
+        folder_exists = os.path.isdir(dir_path)
+        folder_name = os.path.basename(dir_path.rstrip('/\\'))
+        status_label = "Found" if folder_exists else "Missing"
+        print(f"[{idx}/{total}] [{status_label}] Entry: {entry}")
+
+        artist, album = parse_folder_name(folder_name)
+        if not artist or not album:
+            print("  SKIPPED: Unable to parse 'Artist - Album' from folder name")
+            failed += 1
+            continue
+
+        if verbose:
+            print(f"  Parsed: Artist='{artist}', Album='{album}'")
+
+        if folder_exists:
+            output_path = os.path.join(dir_path, "xfolder.jpg")
+            log_key = dir_path
+        else:
+            filename = sanitize_filename(f"{artist} - {album} xfolder.jpg")
+            output_path = os.path.join(cwd, filename)
+            log_key = output_path
+
+        if not ignore_log and logger.is_successful(log_key):
+            print("  SKIPPED: Previously successfully processed (see log)")
+            skipped += 1
+            continue
+
+        if os.path.exists(output_path) and not overwrite:
+            print(f"  SKIPPED: {output_path} already exists (use --overwrite to force)")
+            skipped += 1
+            continue
+
+        try:
+            if downloader.save_artwork(
+                artist=artist,
+                album=album,
+                filename=output_path
+            ):
+                success += 1
+                destination = "directory" if folder_exists else "current working directory"
+                print(f"  SUCCESS: Artwork saved to {output_path} ({destination})")
+                logger.log_success(log_key, artist, album, output_path)
+            else:
+                failed += 1
+                print(f"  FAILED: Could not find artwork for {artist} - {album}")
+        except RateLimitExceededError as exc:
+            print("  STOPPED: Apple Music is still throttling requests. Halting file processing early.")
+            rate_limit_error = exc
+            break
+
+        delay = downloader.current_delay
+        if delay > 0:
+            time.sleep(delay)
+
+    if rate_limit_error:
+        print("Processing interrupted by rate limiting; summary reflects completed entries only.")
+
+    print("-" * 60)
+    print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
+
+    if rate_limit_error:
+        print("Processing stopped early due to continued rate limiting. Please retry later.")
+        raise rate_limit_error
 
     return {
         "total": total,
@@ -458,6 +669,12 @@ Modes of operation:
      Use --dir to process multiple folders at once
      Folder names should be in format "Artist - Album"
      Any text in square brackets [] will be stripped from album name
+
+  3. File-driven mode:
+      Use --dirs2process FILE to read absolute folder paths from a text file
+      Each line should contain one folder path (comments/blank lines ignored)
+      Missing folders are saved into the current working directory as
+      "Artist - Album xfolder.jpg"
 
 Success Log:
   In batch mode, a success log file (artwork_downloader.log) is created in the --dir directory.
@@ -484,6 +701,7 @@ Examples:
     # Single artwork mode arguments
     mode_group.add_argument("--artist", "-a", help="Artist name (for single artwork mode)")
     mode_group.add_argument("--dir", "-d", help="Directory path (for batch mode)")
+    mode_group.add_argument("--dirs2process", "-f", help="Text file listing directory paths to process")
 
     # Single artwork mode optional arguments
     parser.add_argument("--album", "-l", help="Album name (for single artwork mode)")
@@ -496,7 +714,7 @@ Examples:
 
     # Common arguments
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
-    parser.add_argument("--throttle", type=float, default=0, help="Seconds to wait between requests (default: 0)")
+    parser.add_argument("--throttle", type=float, default=1, help="Seconds to wait between requests (default: 1)")
 
     # If no arguments provided, show extended help
     if len(sys.argv) == 1:
@@ -524,37 +742,50 @@ def main():
     """Main entry point for command-line usage"""
     args = parse_arguments()
 
-    if args.dir:
-        # Batch directory mode
-        process_directory(
-            directory=args.dir,
-            verbose=args.verbose,
-            throttle=args.throttle,
-            ignore_log=args.ignore_log,
-            overwrite=args.overwrite
-        )
-    else:
-        # Single artwork mode
-        validate_single_mode_arguments(args)
+    try:
+        if args.dir:
+            # Batch directory mode
+            process_directory(
+                directory=args.dir,
+                verbose=args.verbose,
+                throttle=args.throttle,
+                ignore_log=args.ignore_log,
+                overwrite=args.overwrite
+            )
+        elif getattr(args, "dirs2process", None):
+            # File-driven mode
+            process_directory_file(
+                list_file=args.dirs2process,
+                verbose=args.verbose,
+                throttle=args.throttle,
+                overwrite=args.overwrite,
+                ignore_log=args.ignore_log
+            )
+        else:
+            # Single artwork mode
+            validate_single_mode_arguments(args)
 
-        downloader = AppleMusicArtworkDownloader(
-            verbose=args.verbose,
-            throttle=args.throttle
-        )
+            downloader = AppleMusicArtworkDownloader(
+                verbose=args.verbose,
+                throttle=args.throttle
+            )
 
-        success = downloader.save_artwork(
-            artist=args.artist,
-            album=args.album,
-            title=args.title if not args.album else None,  # Don't pass title if album is specified
-            filename=args.output
-        )
+            success = downloader.save_artwork(
+                artist=args.artist,
+                album=args.album,
+                title=args.title if not args.album else None,  # Don't pass title if album is specified
+                filename=args.output
+            )
 
-        sys.exit(0 if success else 1)
+            sys.exit(0 if success else 1)
+    except RateLimitExceededError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(2)
 
 
 # Helper function for easy import
 def get_apple_music_artwork(artist: str, album: str = None, title: str = None,
-                           verbose: bool = False, throttle: float = 0) -> bytes:
+                           verbose: bool = False, throttle: float = 1) -> bytes:
     """
     Convenience function for importing.
 
