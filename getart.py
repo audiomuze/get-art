@@ -854,12 +854,10 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     if retry_only:
         retry_failed = True
 
-    # Get all subdirectories
-    subfolders = []
-    for item in os.listdir(directory):
-        item_path = os.path.join(directory, item)
-        if os.path.isdir(item_path):
-            subfolders.append(item)
+    subfolders = [
+        item for item in os.listdir(directory)
+        if os.path.isdir(os.path.join(directory, item))
+    ]
 
     total = len(subfolders)
     success = 0
@@ -874,6 +872,9 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
     rate_limit_error = None
 
+    def log_action(message: str) -> None:
+        print(f"    -> {message}")
+
     for i, folder in enumerate(subfolders, 1):
         folder_path = os.path.join(directory, folder)
         is_failed_entry = logger.is_failed(folder_path)
@@ -882,29 +883,25 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             skipped += 1
             continue
 
-        print(f"[{i}/{total}] Processing: {folder}")
+        print(f"[{i}/{total}] {folder}")
 
-        # 1a. Check if folder is in success log (unless retry-only)
         if not retry_only and not ignore_log and logger.is_successful(folder_path):
-            print(f"  SKIPPED: Previously successfully processed (see log)")
+            log_action("SKIPPED: previously successful; see log")
             skipped += 1
             continue
 
-        # 1b. Check if folder is in failed log
         if not retry_failed and is_failed_entry:
-            print(
-                f"  SKIPPED: Previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
+            log_action(
+                f"SKIPPED: previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
             )
             skipped += 1
             continue
 
         artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(folder_path)
 
-        # 2. Check if xfolder.jpg exists
         output_path = os.path.join(folder_path, "xfolder.jpg")
         if os.path.exists(output_path) and not overwrite:
-            print(f"  SKIPPED: xfolder.jpg already exists (use --overwrite to force)")
-            # Log it as successful since xfolder.jpg exists
+            log_action("SKIPPED: xfolder.jpg already exists; use --overwrite")
             if artist and album:
                 logger.log_success(folder_path, artist, album, output_path)
                 logger.clear_failure(folder_path)
@@ -913,25 +910,23 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
         if not artist or not album:
             if used_parent_metadata:
-                print("  SKIPPED: Unable to derive artist/album even after checking parent folder")
+                log_action("SKIPPED: unable to derive artist/album even after checking parent folder")
             else:
-                print(f"  SKIPPED: Invalid folder format. Expected 'Artist - Album'")
-            failed += 1  # Count as failed since we can't even try
+                log_action("SKIPPED: invalid folder format; expected 'Artist - Album'")
+            failed += 1
             continue
 
         if verbose:
             if used_parent_metadata and metadata_source:
-                print(f"  Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
+                log_action(f"Parsed via parent '{metadata_source}': {artist} - {album}")
             else:
-                print(f"  Parsed: Artist='{artist}', Album='{album}'")
+                log_action(f"Parsed: {artist} - {album}")
 
-        # Validate that the folder exists before writing
         if not os.path.exists(folder_path):
-            print(f"  SKIPPED: Folder '{folder_path}' does not exist")
+            log_action(f"SKIPPED: folder '{folder_path}' does not exist")
             failed += 1
             continue
 
-        # Download and save artwork
         try:
             lookup_success = downloader.save_artwork(
                 artist=artist,
@@ -946,11 +941,9 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 )
 
                 if used_fallback_name:
-                    print(
-                        f"  SUCCESS: Artwork saved to {final_path} (partial Apple match, not logged for retry visibility)"
-                    )
+                    log_action(f"SUCCESS: saved to {final_path} (partial Apple match; not logged)")
                 else:
-                    print(f"  SUCCESS: Artwork saved to {final_path}")
+                    log_action(f"SUCCESS: saved to {final_path}")
                     logger.log_success(folder_path, artist, album, final_path)
                     logger.clear_failure(folder_path)
             else:
@@ -963,48 +956,47 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     final_path, used_fallback_name = _finalize_output_path(
                         output_path, downloader.last_match_type
                     )
-                    print(
-                        f"  SUCCESS: Artwork saved to {final_path} using tag fallback ({fb_artist} - {fb_album})"
-                        print("                -> SKIPPED (previously successful; see log)")
+                    log_action(
+                        f"SUCCESS: saved to {final_path} via tag fallback ({fb_artist} - {fb_album})"
+                    )
                     if not used_fallback_name:
                         logger.log_success(folder_path, fb_artist, fb_album, final_path)
                         logger.clear_failure(folder_path)
                     else:
-                        print("    NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
-                        print(f"                -> SKIPPED (previously failed lookup; see {logger.failed_log_file}); use --retry to reprocess")
+                        log_action("NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
+                else:
                     failed += 1
                     reason = "Artwork not found"
                     if fallback_attempted:
                         reason += " (tag fallback unavailable or unsuccessful)"
-                    print(f"  FAILED: Could not find artwork for {artist} - {album}")
+                    log_action(f"FAILED: Could not find artwork for {artist} - {album}")
                     logger.log_failure(folder_path, artist, album, reason)
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting batch early.")
-                        print("                -> SKIPPED (xfolder.jpg already exists; use --overwrite)")
+            rate_limit_error = exc
             break
 
-        # Add a small delay between requests to be polite
         delay = downloader.current_delay
         if delay > 0:
             time.sleep(delay)
 
     if rate_limit_error:
         print("Processing interrupted by rate limiting; summary reflects completed folders only.")
-                            print("                -> SKIPPED (unable to derive artist/album even after checking parent folder)")
+
     print("-" * 60)
-                            print("                -> SKIPPED (invalid folder format; expected 'Artist - Album')")
+    print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
     if os.path.exists(logger.log_file):
         print(f"Success log: {logger.log_file}")
 
     if rate_limit_error:
         print("Processing stopped early due to continued rate limiting. Please retry later.")
-                            print(f"                -> Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
+        raise rate_limit_error
 
-                            print(f"                -> Parsed: Artist='{artist}', Album='{album}'")
+    return {
         "total": total,
         "success": success,
         "failed": failed,
-                        print(f"                -> SKIPPED (folder '{folder_path}' does not exist)")
+        "skipped": skipped
     }
 
 
@@ -1023,9 +1015,9 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     raw_lines = []
     with open(list_file, 'r', encoding='utf-8') as f:
         for raw_line in f:
-                                print(f"                -> SUCCESS (saved to {final_path}; partial Apple match, not logged)")
+            line = raw_line.strip()
             if not line or line.startswith('#'):
-                                print(f"                -> SUCCESS (saved to {final_path})")
+                continue
             raw_lines.append(line)
 
     if not raw_lines:
@@ -1038,18 +1030,18 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     success = 0
     failed = 0
     skipped = 0
-                                print(f"                -> SUCCESS (saved to {final_path} using tag fallback: {fb_artist} - {fb_album})")
+    rate_limit_error = None
 
     if retry_only:
         retry_failed = True
 
-                                    print("                NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
+    print(f"Loaded {total} path(s) from '{list_file}'")
     print("-" * 60)
 
     entry_infos = []
     for entry in raw_lines:
         dir_path = os.path.abspath(entry)
-                                print(f"                -> FAILED (no artwork for {artist} - {album})")
+        folder_exists = os.path.isdir(dir_path)
         artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(dir_path)
         info = {
             "entry": entry,
