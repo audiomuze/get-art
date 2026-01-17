@@ -21,7 +21,13 @@ It does not embed images in file metadata.
 
 ### Option 1: `uv tool install` (recommended)
 
-This repository publishes tagged releases that `uv` can install directly from Git. Pick a tag (for example `v0.1.1`) and run:
+If you just want “whatever is on main right now,” point `uv` at the branch:
+
+```bash
+uv tool install --from git+https://github.com/audiomuze/get-art.git@main get-art
+```
+
+Re-run the same command (or `uv tool upgrade get-art --from git+https://github.com/audiomuze/get-art.git@main`) to pick up future commits. If you prefer pinned builds, this repository also publishes tagged releases that `uv` can install directly from Git. Pick a tag (for example `v0.1.1`) and run:
 
 ```bash
 uv tool install --from git+https://github.com/audiomuze/get-art.git@v0.1.1 get-art
