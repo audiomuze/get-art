@@ -684,6 +684,56 @@ class ProcessingLogger:
         except Exception as e:
             print(f"Warning: Could not initialize log file {file_path}: {e}")
 
+    def _replace_log_entry(self, file_path: str, folder_path: str, new_entry: str) -> bool:
+        """Replace an existing log entry for folder_path with new_entry."""
+        try:
+            if not os.path.exists(file_path):
+                return False
+
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            prefix = f"{folder_path} |"
+            entry_line = new_entry + "\n"
+            updated = False
+
+            for idx, line in enumerate(lines):
+                if line.startswith(prefix):
+                    lines[idx] = entry_line
+                    updated = True
+                    break
+
+            if not updated:
+                lines.append(entry_line)
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not update log file {file_path}: {e}")
+            return False
+
+    def clear_failure(self, folder_path: str):
+        """Remove a folder from the failed lookup log."""
+        if folder_path not in self.failed_folders:
+            return
+
+        try:
+            if os.path.exists(self.failed_log_file):
+                with open(self.failed_log_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+
+                prefix = f"{folder_path} |"
+                with open(self.failed_log_file, 'w', encoding='utf-8') as f:
+                    for line in lines:
+                        if line.startswith(prefix):
+                            continue
+                        f.write(line)
+        except Exception as e:
+            print(f"Warning: Could not prune failed log entry for {folder_path}: {e}")
+        finally:
+            self.failed_folders.discard(folder_path)
+
     def is_successful(self, folder_path: str) -> bool:
         """Check if folder was successfully processed before"""
         return folder_path in self.successful_folders
@@ -734,10 +784,18 @@ class ProcessingLogger:
                 ]
             )
 
-            with open(self.failed_log_file, 'a', encoding='utf-8') as f:
-                f.write(log_entry + "\n")
+            entry_written = False
 
-            self.failed_folders.add(folder_path)
+            if folder_path in self.failed_folders:
+                entry_written = self._replace_log_entry(self.failed_log_file, folder_path, log_entry)
+
+            if not entry_written:
+                with open(self.failed_log_file, 'a', encoding='utf-8') as f:
+                    f.write(log_entry + "\n")
+                entry_written = True
+
+            if entry_written:
+                self.failed_folders.add(folder_path)
         except Exception as e:
             print(f"Warning: Could not write to failed log file: {e}")
 
@@ -829,6 +887,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             # Log it as successful since xfolder.jpg exists
             if artist and album:
                 logger.log_success(folder_path, artist, album, output_path)
+                logger.clear_failure(folder_path)
             skipped += 1
             continue
 
@@ -873,6 +932,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 else:
                     print(f"  SUCCESS: Artwork saved to {final_path}")
                     logger.log_success(folder_path, artist, album, final_path)
+                    logger.clear_failure(folder_path)
             else:
                 fallback_success, fb_artist, fb_album, fallback_attempted = attempt_tag_based_fallback(
                     folder_path, downloader, output_path, verbose=verbose
@@ -888,6 +948,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     )
                     if not used_fallback_name:
                         logger.log_success(folder_path, fb_artist, fb_album, final_path)
+                        logger.clear_failure(folder_path)
                     else:
                         print("    NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
                 else:
@@ -1075,6 +1136,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                 print(f"  SUCCESS: Artwork saved to {final_path} ({destination})")
                 if not used_fallback_name:
                     logger.log_success(log_key, artist, album, final_path)
+                    if log_key:
+                        logger.clear_failure(log_key)
                 else:
                     print("    NOTE: Partial Apple match; entry not logged so it can be retried later.")
             else:
@@ -1099,6 +1162,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     )
                     if not used_fallback_name:
                         logger.log_success(log_key, fb_artist, fb_album, final_path)
+                        if log_key:
+                            logger.clear_failure(log_key)
                     else:
                         print("    NOTE: Partial Apple match via tags; not logging so it can be retried later.")
                 else:
