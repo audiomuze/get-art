@@ -102,6 +102,10 @@ When Mutagen is installed, both batch and file-driven modes automatically fall b
 
 Each basename is parsed as `Artist - Album`; square-bracket and parenthetical suffixes are stripped from the album title before searching Apple Music.
 
+## Attribution
+
+- The HTTP/query portion of `AppleMusicArtworkDownloader` (iTunes Search requests, response handling, and image URL rewriting) is adapted from the excellent [regosen/get_cover_art](https://github.com/regosen/get_cover_art) project (MIT License). Huge thanks to its authors for publishing their downloader; additional features in this repository build upon that foundation.
+
 ## Tips
 
 - Folder names must contain a literal ` - ` separating artist and album. Additional tags can live in `[...]` or `(...)` and will be ignored during lookup.
@@ -118,4 +122,4 @@ Each basename is parsed as `Artist - Album`; square-bracket and parenthetical su
 
 ## License
 
-MIT-style license (adapt or reuse freely). Contributions welcome!
+Released under the MIT License; see [LICENSE](LICENSE) for details. Portions of the HTTP/query stack retain the upstream MIT notice from [regosen/get_cover_art](https://github.com/regosen/get_cover_art).
