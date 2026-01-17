@@ -866,7 +866,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         is_failed_entry = logger.is_failed(folder_path)
 
         if retry_only and not is_failed_entry:
-            print("  SKIPPED: Not recorded in failed lookup log (--retry-only active)")
+            if verbose:
+                print("  SKIPPED: Not recorded in failed lookup log (--retry-only active)")
             skipped += 1
             continue
 
