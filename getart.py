@@ -907,7 +907,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
         output_path = os.path.join(folder_path, "xfolder.jpg")
         if os.path.exists(output_path) and not overwrite:
-            log_action(i, folder, "SKIPPED: xfolder.jpg already exists; use --overwrite to replace if desired")
+            if verbose:
+                log_action(i, folder, "SKIPPED: xfolder.jpg already exists; use --overwrite to replace if desired")
             if artist and album:
                 logger.log_success(folder_path, artist, album, output_path)
                 logger.clear_failure(folder_path)
