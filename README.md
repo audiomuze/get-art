@@ -2,6 +2,8 @@
 
 Download the highest-resolution (up to 9999×9999) Apple Music artwork for your library using simple command-line workflows. The script can operate on one album/track, on every folder under a root directory, or on explicit folder paths listed inside a text file. All modes are resumable, polite to Apple’s API, and rely on the Python standard library plus RapidFuzz (for scoring) and Mutagen (for tag-based fallbacks).
 
+It does not embed images in file metadata.
+
 ## Features
 
 - Retrieves cover art at 9999×9999 px (quality 100) by default.
@@ -119,7 +121,7 @@ Each basename is parsed as `Artist - Album`; square-bracket and parenthetical su
 
 ## Attribution
 
-- The HTTP/query portion of `AppleMusicArtworkDownloader` (iTunes Search requests, response handling, and image URL rewriting) is adapted from the excellent [regosen/get_cover_art](https://github.com/regosen/get_cover_art) project (MIT License). Huge thanks to its authors for publishing their downloader; additional features in this repository build upon that foundation.
+- The HTTP/query portion of `AppleMusicArtworkDownloader` (iTunes Search requests, response handling, and image URL rewriting) is adapted from the excellent [regosen/get_cover_art](https://github.com/regosen/get_cover_art) project (MIT License). Additional features in this repository build upon that foundation.
 
 ## Tips
 
