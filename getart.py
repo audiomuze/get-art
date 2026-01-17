@@ -520,6 +520,24 @@ def _dedupe_preserve_order(values):
     return result
 
 
+def _flatten_tag_values(raw_value):
+    """Return a flat list of string values from Mutagen tag containers."""
+    if raw_value is None:
+        return []
+
+    if isinstance(raw_value, (list, tuple, set)):
+        flattened = []
+        for item in raw_value:
+            flattened.extend(_flatten_tag_values(item))
+        return flattened
+
+    if hasattr(raw_value, "text"):
+        return _flatten_tag_values(raw_value.text)
+
+    text = str(raw_value).strip()
+    return [text] if text else []
+
+
 def _find_first_audio_file(folder_path: str) -> str:
     """Return the first audio file (sorted) with an extension Mutagen can parse."""
     try:
@@ -554,13 +572,16 @@ def _extract_tag_candidates(audio_path: str, verbose: bool = False):
             print(f"  TAG FALLBACK: '{os.path.basename(audio_path)}' is not a supported audio file")
         return []
 
-    album_values = _dedupe_preserve_order(audio.get("album", []))
+    album_values = _dedupe_preserve_order(_flatten_tag_values(audio.get("album")))
     if not album_values:
         if verbose:
             print("  TAG FALLBACK: No 'album' tag present; skipping tag-based retry")
         return []
 
-    artist_values = _dedupe_preserve_order(audio.get("albumartist", []) + audio.get("artist", []))
+    artist_values = _dedupe_preserve_order(
+        _flatten_tag_values(audio.get("albumartist")) +
+        _flatten_tag_values(audio.get("artist"))
+    )
     if not artist_values:
         if verbose:
             print("  TAG FALLBACK: No 'albumartist' or 'artist' tags present; skipping")
