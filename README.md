@@ -8,7 +8,7 @@ It does not embed images in file metadata.
 
 - Retrieves cover art at 9999×9999 px (quality 100) by default.
 - Intelligent matching on artist+album or artist+track names, even when folder names carry extra tags like `[24-96 FLAC]`.
-- Batch directory processing with automatic logging so previously successful folders are skipped unless you opt in.
+- Batch directory processing with automatic logging so previously successful folders are silently skipped (log messages only appear with `--verbose`) unless you opt in.
 - File-driven processing for curated folder lists, saving art either in-place or to the current working directory when folders are missing.
 - Separate success and failure logs (`getart.log` and `getart-failed-lookups.log`) keep runs resumable; use `--retry` when you want to reattempt previously failed lookups.
 - Optional tag-based fallback: if [Mutagen](https://mutagen.readthedocs.io/) is installed, the script inspects the first audio file in a folder and cycles through its `albumartist`/`artist` tags when the folder name lookup fails.
@@ -60,6 +60,14 @@ Python 3.8+ is recommended. RapidFuzz and Mutagen are installed via `requireme
 
 ## Command-Line Modes
 
+Pick exactly one primary mode per invocation:
+
+- No `--dir/--dirs2process`: single artwork lookup (requires `--artist` plus `--album` or `--title`).
+- `--dir`: batch a root folder and every direct subfolder.
+- `--dirs2process`: feed explicit folders from a text file.
+
+`--dir` and `--dirs2process` are mutually exclusive; both error out if supplied together.
+
 ### 1. Single Artwork Mode (default)
 
 Download one artwork by supplying the artist and either an album or a track title.
@@ -69,7 +77,7 @@ python3 getart.py --artist "Taylor Swift" --album "1989"
 python3 getart.py --artist "The Beatles" --title "Yesterday" --output cover.jpg
 ```
 
-Options:
+Other options:
 
 - `--artist/-a` (required).
 - `--album/-l` or `--title/-t` (one required).
@@ -85,6 +93,20 @@ Process every subfolder inside a root directory. Each subfolder must be named `A
 python3 getart.py --dir /media/music --verbose --throttle 0.5
 python3 getart.py --dir /media/music --ignore-log --overwrite
 ```
+
+Skips & logs:
+
+- Successful folders are recorded in `getart.log` and are silently skipped on future runs; add `--verbose` if you want the script to print when that happens.
+- Failed folders are captured in `getart-failed-lookups.log` and are also skipped unless you pass `--retry` (or `--retry-only`). Their skip notices likewise only appear when `--verbose` is on so that normal runs stay quiet.
+
+Flag reference:
+
+| Flag | Purpose | Works well with | Notes |
+| --- | --- | --- | --- |
+| `--ignore-log` | Force reruns for folders already recorded in `getart.log`. | `--overwrite` when you want to rebuild every cover. | Optional; cannot resurrect deleted log entries. |
+| `--overwrite` | Replace an existing `xfolder.jpg`. | `--ignore-log` to ensure each folder is reconsidered. | Does not affect `xfolder_fallback.jpg`. |
+| `--retry` | Include folders captured in `getart-failed-lookups.log`. | `--retry-only` when you only want failed entries. | Safe to combine with `--ignore-log`/`--overwrite`. |
+| `--retry-only` | Process only the failed-log entries. | `--retry` (implicitly enabled). | Automatically flips on `--retry` and skips everything else. |
 
 Options:
 
@@ -103,12 +125,21 @@ Read absolute folder paths from a text file (one per line). Comments (`# ...`) a
 python3 getart.py --dirs2process /tmp/folders-to-process.txt --verbose
 ```
 
+Flag reference:
+
+| Flag | Purpose | Works well with | Notes |
+| --- | --- | --- | --- |
+| `--ignore-log` | Re-run folders already logged as successful. | `--overwrite` if you want to replace artwork. | Log file lives where you launch the command. |
+| `--overwrite` | Replace an existing `xfolder.jpg`. | `--ignore-log` or `--retry`. | Only affects folders that actually exist. |
+| `--retry` | Include folders captured in `getart-failed-lookups.log`. | `--retry-only` (implicit). | Log lives alongside `getart.log` in your current working dir. |
+| `--retry-only` | Restrict processing to the failed log. | `--retry` (implicit). | Ignores every list entry that isn’t in `getart-failed-lookups.log`. |
+
 Behavior:
 
 - If a listed folder exists, artwork is saved inside that folder as `xfolder.jpg` (respecting `--overwrite`).
 - If a folder is missing, artwork is saved to the directory you launched the script from using the filename `Artist - Album xfolder.jpg` (illegal filename characters are sanitized automatically).
-- Successful entries are logged to `getart.log` in the directory where you launched the script, so future runs can skip them unless you pass `--ignore-log`.
-- Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`.
+- Successful entries are logged to `getart.log` in the directory where you launched the script, so future runs can skip them unless you pass `--ignore-log`. Skip notifications only print when `--verbose` is set.
+- Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`. As with batch mode, the skip notice is quiet unless `--verbose` is active.
 - Pair `--retry-only` with `--dirs2process` when you want the file-driven mode to run exclusively on paths that are already captured in `getart-failed-lookups.log`.
 - No directories are created when entries are missing.
 

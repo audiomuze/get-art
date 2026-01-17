@@ -894,11 +894,12 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             continue
 
         if not retry_failed and is_failed_entry:
-            log_action(
-                i,
-                folder,
-                f"SKIPPED: previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
-            )
+            if verbose:
+                log_action(
+                    i,
+                    folder,
+                    f"SKIPPED: previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
+                )
             skipped += 1
             continue
 
