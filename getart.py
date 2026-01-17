@@ -354,42 +354,55 @@ def sanitize_filename(name: str) -> str:
 
 
 class ProcessingLogger:
-    """Log successfully processed folders"""
+    """Track successful and failed processing attempts."""
 
     LOG_FILENAME = "getart.log"
+    FAILED_LOG_FILENAME = "getart-failed-lookups.log"
 
     def __init__(self, log_dir: str):
-        """
-        Initialize logger with directory path.
-
-        Args:
-            log_dir: Directory where log file will be stored
-        """
+        """Initialize logger with directory path."""
         self.log_dir = os.path.abspath(log_dir)
         self.log_file = os.path.join(self.log_dir, self.LOG_FILENAME)
-        self.successful_folders = self._load_log()
+        self.failed_log_file = os.path.join(self.log_dir, self.FAILED_LOG_FILENAME)
+        self.successful_folders = self._load_log(self.log_file)
+        self.failed_folders = self._load_log(self.failed_log_file)
 
-    def _load_log(self) -> set:
-        """Load successfully processed folders from log file"""
-        successful = set()
-        if os.path.exists(self.log_file):
+    def _load_log(self, file_path: str) -> set:
+        """Load folder identifiers from the specified log file."""
+        entries = set()
+        if os.path.exists(file_path):
             try:
-                with open(self.log_file, 'r', encoding='utf-8') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#'):
-                            # Extract full path from log entry
                             parts = line.split('|')
-                            if len(parts) >= 2:
+                            if parts:
                                 folder_path = parts[0].strip()
-                                successful.add(folder_path)
+                                if folder_path:
+                                    entries.add(folder_path)
             except Exception as e:
-                print(f"Warning: Could not read log file: {e}")
-        return successful
+                print(f"Warning: Could not read log file {file_path}: {e}")
+        return entries
+
+    def _ensure_log_header(self, file_path: str, header_lines: list):
+        """Create log file with descriptive header if missing."""
+        if os.path.exists(file_path):
+            return
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for line in header_lines:
+                    f.write(line + "\n")
+        except Exception as e:
+            print(f"Warning: Could not initialize log file {file_path}: {e}")
 
     def is_successful(self, folder_path: str) -> bool:
         """Check if folder was successfully processed before"""
         return folder_path in self.successful_folders
+
+    def is_failed(self, folder_path: str) -> bool:
+        """Check if folder previously failed to retrieve artwork."""
+        return folder_path in self.failed_folders
 
     def log_success(self, folder_path: str, artist: str, album: str, output_file: str):
         """Log a successful processing"""
@@ -397,15 +410,16 @@ class ProcessingLogger:
         log_entry = f"{folder_path} | {artist} | {album} | {output_file} | {timestamp}"
 
         try:
-            # Create log file if it doesn't exist and write header
-            if not os.path.exists(self.log_file):
-                with open(self.log_file, 'w', encoding='utf-8') as f:
-                    f.write("# Artwork Downloader Success Log\n")
-                    f.write("# Only folders with successfully downloaded artwork are logged\n")
-                    f.write("# Format: Full Folder Path | Artist | Album | Output File | Timestamp\n")
-                    f.write("# " + "=" * 80 + "\n")
+            self._ensure_log_header(
+                self.log_file,
+                [
+                    "# Artwork Downloader Success Log",
+                    "# Only folders with successfully downloaded artwork are logged",
+                    "# Format: Full Folder Path | Artist | Album | Output File | Timestamp",
+                    "# " + "=" * 80
+                ]
+            )
 
-            # Append the new entry
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(log_entry + "\n")
 
@@ -415,9 +429,34 @@ class ProcessingLogger:
         except Exception as e:
             print(f"Warning: Could not write to log file: {e}")
 
+    def log_failure(self, folder_path: str, artist: str, album: str, reason: str):
+        """Log a failed lookup attempt."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"{folder_path} | {artist} | {album} | {reason} | {timestamp}"
+
+        try:
+            self._ensure_log_header(
+                self.failed_log_file,
+                [
+                    "# Artwork Downloader Failed Lookups Log",
+                    "# Entries recorded here could not be matched to Apple Music",
+                    "# Use --retry to reprocess them; entries stay skipped otherwise",
+                    "# Format: Folder Identifier | Artist | Album | Reason | Timestamp",
+                    "# " + "=" * 80
+                ]
+            )
+
+            with open(self.failed_log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry + "\n")
+
+            self.failed_folders.add(folder_path)
+        except Exception as e:
+            print(f"Warning: Could not write to failed log file: {e}")
+
 
 def process_directory(directory: str, verbose: bool = False, throttle: float = 0,
-                      ignore_log: bool = False, overwrite: bool = False):
+                      ignore_log: bool = False, overwrite: bool = False,
+                      retry_failed: bool = False):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -427,6 +466,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         throttle: Seconds to wait if rate-limited
         ignore_log: Ignore previous successful processing log
         overwrite: Overwrite existing xfolder.jpg files
+        retry_failed: Reprocess folders recorded in the failed lookup log
 
     Returns:
         dict: Statistics about processed folders
@@ -468,9 +508,17 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         folder_path = os.path.join(directory, folder)
         print(f"[{i}/{total}] Processing: {folder}")
 
-        # 1. Check if folder is in success log
+        # 1a. Check if folder is in success log
         if not ignore_log and logger.is_successful(folder_path):
             print(f"  SKIPPED: Previously successfully processed (see log)")
+            skipped += 1
+            continue
+
+        # 1b. Check if folder is in failed log
+        if not retry_failed and logger.is_failed(folder_path):
+            print(
+                f"  SKIPPED: Previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
+            )
             skipped += 1
             continue
 
@@ -516,7 +564,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             else:
                 failed += 1
                 print(f"  FAILED: Could not find artwork for {artist} - {album}")
-                # Do NOT log failures - they can be retried next run
+                logger.log_failure(folder_path, artist, album, "Artwork not found")
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting batch early.")
             rate_limit_error = exc
@@ -548,7 +596,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
 
 def process_directory_file(list_file: str, verbose: bool = False, throttle: float = 0,
-                           overwrite: bool = False, ignore_log: bool = False) -> dict:
+                           overwrite: bool = False, ignore_log: bool = False,
+                           retry_failed: bool = False) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -581,15 +630,66 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     print(f"Loaded {total} path(s) from '{list_file}'")
     print("-" * 60)
 
-    for idx, entry in enumerate(raw_lines, 1):
+    entry_infos = []
+    for entry in raw_lines:
         dir_path = os.path.abspath(entry)
         folder_exists = os.path.isdir(dir_path)
         folder_name = os.path.basename(dir_path.rstrip('/\\'))
-        status_label = "Found" if folder_exists else "Missing"
-        print(f"[{idx}/{total}] [{status_label}] Entry: {entry}")
-
         artist, album = parse_folder_name(folder_name)
-        if not artist or not album:
+        info = {
+            "entry": entry,
+            "dir_path": dir_path,
+            "folder_exists": folder_exists,
+            "artist": artist,
+            "album": album,
+            "valid": bool(artist and album)
+        }
+
+        if info["valid"]:
+            if folder_exists:
+                output_path = os.path.join(dir_path, "xfolder.jpg")
+                log_key = dir_path
+            else:
+                filename = sanitize_filename(f"{artist} - {album} xfolder.jpg")
+                output_path = os.path.join(cwd, filename)
+                log_key = output_path
+            info.update({"output_path": output_path, "log_key": log_key})
+        else:
+            info.update({"output_path": None, "log_key": None})
+
+        entry_infos.append(info)
+
+    work_items = []
+    prefiltered_failures = 0
+    for info in entry_infos:
+        log_key = info.get("log_key")
+        if log_key and not ignore_log and logger.is_successful(log_key):
+            skipped += 1
+            continue
+        if log_key and not retry_failed and logger.is_failed(log_key):
+            prefiltered_failures += 1
+            skipped += 1
+            continue
+        work_items.append(info)
+
+    work_total = len(work_items)
+
+    if prefiltered_failures:
+        print(
+            f"Skipped {prefiltered_failures} entr{'y' if prefiltered_failures == 1 else 'ies'} due to previous failures "
+            f"(see {logger.failed_log_file}); rerun with --retry to include them."
+        )
+
+    for idx, info in enumerate(work_items, 1):
+        entry = info["entry"]
+        folder_exists = info["folder_exists"]
+        artist = info["artist"]
+        album = info["album"]
+        valid = info["valid"]
+        status_label = "Found" if folder_exists else "Missing"
+        print(f"[{idx}/{work_total}] [{status_label}] Entry: {entry}")
+
+        if not valid:
             print("  SKIPPED: Unable to parse 'Artist - Album' from folder name")
             failed += 1
             continue
@@ -597,18 +697,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         if verbose:
             print(f"  Parsed: Artist='{artist}', Album='{album}'")
 
-        if folder_exists:
-            output_path = os.path.join(dir_path, "xfolder.jpg")
-            log_key = dir_path
-        else:
-            filename = sanitize_filename(f"{artist} - {album} xfolder.jpg")
-            output_path = os.path.join(cwd, filename)
-            log_key = output_path
-
-        if not ignore_log and logger.is_successful(log_key):
-            print("  SKIPPED: Previously successfully processed (see log)")
-            skipped += 1
-            continue
+        output_path = info["output_path"]
+        log_key = info["log_key"]
 
         if os.path.exists(output_path) and not overwrite:
             print(f"  SKIPPED: {output_path} already exists (use --overwrite to force)")
@@ -628,6 +718,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             else:
                 failed += 1
                 print(f"  FAILED: Could not find artwork for {artist} - {album}")
+                if log_key:
+                    logger.log_failure(log_key, artist, album, "Artwork not found")
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting file processing early.")
             rate_limit_error = exc
@@ -711,6 +803,12 @@ Examples:
     # Batch mode optional arguments
     parser.add_argument("--ignore-log", "-i", action="store_true", help="Ignore success log and retry all folders")
     parser.add_argument("--overwrite", "-w", action="store_true", help="Overwrite existing xfolder.jpg files")
+    parser.add_argument(
+        "--retry",
+        "-r",
+        action="store_true",
+        help="Retry entries recorded in getart-failed-lookups.log"
+    )
 
     # Common arguments
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
@@ -750,7 +848,8 @@ def main():
                 verbose=args.verbose,
                 throttle=args.throttle,
                 ignore_log=args.ignore_log,
-                overwrite=args.overwrite
+                overwrite=args.overwrite,
+                retry_failed=args.retry
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -759,7 +858,8 @@ def main():
                 verbose=args.verbose,
                 throttle=args.throttle,
                 overwrite=args.overwrite,
-                ignore_log=args.ignore_log
+                ignore_log=args.ignore_log,
+                retry_failed=args.retry
             )
         else:
             # Single artwork mode

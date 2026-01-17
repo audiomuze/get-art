@@ -8,6 +8,7 @@ Download the highest-resolution (up to 9999×9999) Apple Music artwork for your 
 - Intelligent matching on artist+album or artist+track names, even when folder names carry extra tags like `[24-96 FLAC]`.
 - Batch directory processing with automatic logging so previously successful folders are skipped unless you opt in.
 - File-driven processing for curated folder lists, saving art either in-place or to the current working directory when folders are missing.
+- Separate success and failure logs (`getart.log` and `getart-failed-lookups.log`) keep runs resumable; use `--retry` when you want to reattempt previously failed lookups.
 - Built-in rate-limit handling: escalates to 5-second delays when Apple throttles and exits cleanly if throttling continues.
 
 ## Installation
@@ -53,6 +54,7 @@ Options:
 - `--dir/-d PATH` (required for this mode).
 - `--ignore-log` to reprocess folders that were logged as successful.
 - `--overwrite` to replace existing `xfolder.jpg` files.
+- `--retry` to reprocess entries listed in `getart-failed-lookups.log` (stored alongside `getart.log` in the target directory).
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
 
 ### 3. File-Driven Mode (`--dirs2process`)
@@ -68,6 +70,7 @@ Behavior:
 - If a listed folder exists, artwork is saved inside that folder as `xfolder.jpg` (respecting `--overwrite`).
 - If a folder is missing, artwork is saved to the directory you launched the script from using the filename `Artist - Album xfolder.jpg` (illegal filename characters are sanitized automatically).
 - Successful entries are logged to `getart.log` in the directory where you launched the script, so future runs can skip them unless you pass `--ignore-log`.
+- Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`.
 - No directories are created when entries are missing.
 
 ## Rate Limiting & Retries
