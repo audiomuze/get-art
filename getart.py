@@ -535,7 +535,15 @@ def _flatten_tag_values(raw_value):
         return _flatten_tag_values(raw_value.text)
 
     text = str(raw_value).strip()
-    return [text] if text else []
+    if not text:
+        return []
+
+    if '\\' in text:
+        parts = [segment.strip() for segment in text.split('\\') if segment.strip()]
+        if len(parts) > 1:
+            return parts
+
+    return [text]
 
 
 def _find_first_audio_file(folder_path: str) -> str:
