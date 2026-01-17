@@ -1,0 +1,22 @@
+[project]
+name = "get-art"
+version = "0.1.0"
+description = "Apple Music artwork downloader with disc-aware parsing and tag fallbacks"
+readme = "README.md"
+authors = [{ name = "audiomuze" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "rapidfuzz>=3.9",
+    "mutagen>=1.47"
+]
+
+[project.scripts]
+getart = "getart:main"
+
+[tool.setuptools]
+py-modules = ["getart"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

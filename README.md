@@ -17,15 +17,30 @@ Download the highest-resolution (up to 9999×9999) Apple Music artwork for your 
 
 ## Installation
 
+### Option 1: `uv tool install` (recommended)
+
+This repository publishes tagged releases that `uv` can install directly from Git. Pick a tag (for example `v0.1.0`) and run:
+
+```bash
+uv tool install --from https://github.com/audiomuze/get-art.git@v0.1.0 get-art
+```
+
+That command builds an isolated environment under `~/.local/share/uv/tools/get-art` and adds a `getart` executable to `~/.local/bin`, so you can run `getart --help` from anywhere. To upgrade later:
+
+```bash
+uv tool install --upgrade get-art
+```
+
+or uninstall with `uv tool uninstall get-art`.
+
+### Option 2: Clone and run locally
+
 ```bash
 git clone https://github.com/audiomuze/get-art.git
 cd get-art
+uv pip install -r requirements.txt  # or: pip install -r requirements.txt
 python3 getart.py --help
-# Install runtime dependencies (RapidFuzz + Mutagen) using uv
-uv pip install -r requirements.txt
 ```
-
-If you are not using [uv](https://github.com/astral-sh/uv), regular `pip install -r requirements.txt` works too.
 
 Python 3.8+ is recommended. RapidFuzz and Mutagen are installed via `requirements.txt`; without Mutagen the tag-based fallback is skipped automatically.
 
