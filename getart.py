@@ -855,19 +855,17 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
     for i, folder in enumerate(subfolders, 1):
         folder_path = os.path.join(directory, folder)
+        is_failed_entry = logger.is_failed(folder_path)
+
+        if retry_only and not is_failed_entry:
+            skipped += 1
+            continue
+
         print(f"[{i}/{total}] Processing: {folder}")
 
         # 1a. Check if folder is in success log (unless retry-only)
         if not retry_only and not ignore_log and logger.is_successful(folder_path):
             print(f"  SKIPPED: Previously successfully processed (see log)")
-            skipped += 1
-            continue
-
-        is_failed_entry = logger.is_failed(folder_path)
-
-        if retry_only and not is_failed_entry:
-            if verbose:
-                print("  SKIPPED: Not recorded in failed lookup log (--retry-only active)")
             skipped += 1
             continue
 
