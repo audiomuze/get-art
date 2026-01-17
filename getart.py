@@ -888,7 +888,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             continue
 
         if not retry_only and not ignore_log and logger.is_successful(folder_path):
-            log_action(i, folder, "SKIPPED: previously successful; see log")
+            if verbose:
+                log_action(i, folder, "SKIPPED: previously successful; see log")
             skipped += 1
             continue
 
