@@ -16,6 +16,11 @@ from datetime import datetime
 from collections.abc import Iterable
 
 try:
+    from importlib import metadata as importlib_metadata
+except ImportError:  # pragma: no cover - Python < 3.8 fallback
+    import importlib_metadata  # type: ignore
+
+try:
     from mutagen import File as MutagenFile
 except ImportError:  # pragma: no cover - optional dependency
     MutagenFile = None
@@ -49,6 +54,27 @@ SUPPORTED_AUDIO_EXTENSIONS = {
 }
 
 FUZZY_SCORE_THRESHOLD = 90.0
+
+
+def _resolve_script_identity() -> tuple[str, str]:
+    """Return a tuple of (script name, version string)."""
+    script_name = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else (
+        os.path.basename(__file__) if "__file__" in globals() else "getart.py"
+    )
+
+    env_version = os.environ.get("GETART_VERSION")
+    if env_version:
+        return script_name, env_version
+
+    try:
+        version = importlib_metadata.version("get-art")
+    except Exception:
+        version = "local-dev"
+
+    return script_name, version
+
+
+SCRIPT_NAME, SCRIPT_VERSION = _resolve_script_identity()
 
 
 class RateLimitExceededError(RuntimeError):
@@ -1480,6 +1506,8 @@ def validate_single_mode_arguments(args):
 
 def main():
     """Main entry point for command-line usage"""
+    print(f"\n{SCRIPT_NAME} {SCRIPT_VERSION}\n")
+
     args = parse_arguments()
 
     try:
