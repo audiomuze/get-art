@@ -13,6 +13,7 @@ from urllib.parse import quote, urlparse
 import argparse
 import sys
 from datetime import datetime
+from collections.abc import Iterable
 
 try:
     from mutagen import File as MutagenFile
@@ -531,6 +532,12 @@ def _flatten_tag_values(raw_value):
             flattened.extend(_flatten_tag_values(item))
         return flattened
 
+    if isinstance(raw_value, Iterable) and not isinstance(raw_value, (str, bytes)):
+        flattened = []
+        for item in raw_value:
+            flattened.extend(_flatten_tag_values(item))
+        return flattened
+
     if hasattr(raw_value, "text"):
         return _flatten_tag_values(raw_value.text)
 
@@ -538,8 +545,14 @@ def _flatten_tag_values(raw_value):
     if not text:
         return []
 
+    separators = []
     if '\\' in text:
-        parts = [segment.strip() for segment in text.split('\\') if segment.strip()]
+        separators.append('\\')
+    if '\x00' in text:
+        separators.append('\x00')
+
+    for sep in separators:
+        parts = [segment.strip() for segment in text.split(sep) if segment.strip()]
         if len(parts) > 1:
             return parts
 
