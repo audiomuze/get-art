@@ -1,6 +1,6 @@
 [project]
 name = "get-art"
-version = "0.1.1"
+version = "0.1.2"
 description = "Apple Music artwork downloader with disc-aware parsing and tag fallbacks"
 readme = "README.md"
 authors = [{ name = "audiomuze" }]

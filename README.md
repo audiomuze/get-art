@@ -27,16 +27,16 @@ If you just want “whatever is on main right now,” point `uv` at the branch:
 uv tool install --from git+https://github.com/audiomuze/get-art.git@main get-art
 ```
 
-Re-run the same command (or `uv tool upgrade get-art --from git+https://github.com/audiomuze/get-art.git@main`) to pick up future commits. If you prefer pinned builds, this repository also publishes tagged releases that `uv` can install directly from Git. Pick a tag (for example `v0.1.1`) and run:
+Re-run the same command (or `uv tool upgrade get-art --from git+https://github.com/audiomuze/get-art.git@main`) to pick up future commits. If you prefer pinned builds, this repository also publishes tagged releases that `uv` can install directly from Git. Pick a tag (for example `v0.1.2`) and run:
 
 ```bash
-uv tool install --from git+https://github.com/audiomuze/get-art.git@v0.1.1 get-art
+uv tool install --from git+https://github.com/audiomuze/get-art.git@v0.1.2 get-art
 ```
 
-Note the `git+` prefix and the `@v0.1.1` suffix on the URL; this is the format `uv` expects for Git sources. Alternatively, you can point at the tagged archive directly:
+Note the `git+` prefix and the `@v0.1.2` suffix on the URL; this is the format `uv` expects for Git sources. Alternatively, you can point at the tagged archive directly:
 
 ```bash
-uv tool install --from https://github.com/audiomuze/get-art/archive/refs/tags/v0.1.1.zip get-art
+uv tool install --from https://github.com/audiomuze/get-art/archive/refs/tags/v0.1.2.zip get-art
 ```
 
 Both commands build an isolated environment under `~/.local/share/uv/tools/get-art` and add a `getart` executable to `~/.local/bin`, so you can run `getart --help` from anywhere. To upgrade later:
