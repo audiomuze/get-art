@@ -965,13 +965,13 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     )
                     print(
                         f"  SUCCESS: Artwork saved to {final_path} using tag fallback ({fb_artist} - {fb_album})"
-                    )
+                        print("                -> SKIPPED (previously successful; see log)")
                     if not used_fallback_name:
                         logger.log_success(folder_path, fb_artist, fb_album, final_path)
                         logger.clear_failure(folder_path)
                     else:
                         print("    NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
-                else:
+                        print(f"                -> SKIPPED (previously failed lookup; see {logger.failed_log_file}); use --retry to reprocess")
                     failed += 1
                     reason = "Artwork not found"
                     if fallback_attempted:
@@ -980,7 +980,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     logger.log_failure(folder_path, artist, album, reason)
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting batch early.")
-            rate_limit_error = exc
+                        print("                -> SKIPPED (xfolder.jpg already exists; use --overwrite)")
             break
 
         # Add a small delay between requests to be polite
@@ -990,21 +990,21 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
     if rate_limit_error:
         print("Processing interrupted by rate limiting; summary reflects completed folders only.")
-
+                            print("                -> SKIPPED (unable to derive artist/album even after checking parent folder)")
     print("-" * 60)
-    print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
+                            print("                -> SKIPPED (invalid folder format; expected 'Artist - Album')")
     if os.path.exists(logger.log_file):
         print(f"Success log: {logger.log_file}")
 
     if rate_limit_error:
         print("Processing stopped early due to continued rate limiting. Please retry later.")
-        raise rate_limit_error
+                            print(f"                -> Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
 
-    return {
+                            print(f"                -> Parsed: Artist='{artist}', Album='{album}'")
         "total": total,
         "success": success,
         "failed": failed,
-        "skipped": skipped
+                        print(f"                -> SKIPPED (folder '{folder_path}' does not exist)")
     }
 
 
@@ -1023,9 +1023,9 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     raw_lines = []
     with open(list_file, 'r', encoding='utf-8') as f:
         for raw_line in f:
-            line = raw_line.strip()
+                                print(f"                -> SUCCESS (saved to {final_path}; partial Apple match, not logged)")
             if not line or line.startswith('#'):
-                continue
+                                print(f"                -> SUCCESS (saved to {final_path})")
             raw_lines.append(line)
 
     if not raw_lines:
@@ -1038,18 +1038,18 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     success = 0
     failed = 0
     skipped = 0
-    rate_limit_error = None
+                                print(f"                -> SUCCESS (saved to {final_path} using tag fallback: {fb_artist} - {fb_album})")
 
     if retry_only:
         retry_failed = True
 
-    print(f"Loaded {total} path(s) from '{list_file}'")
+                                    print("                NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
     print("-" * 60)
 
     entry_infos = []
     for entry in raw_lines:
         dir_path = os.path.abspath(entry)
-        folder_exists = os.path.isdir(dir_path)
+                                print(f"                -> FAILED (no artwork for {artist} - {album})")
         artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(dir_path)
         info = {
             "entry": entry,
