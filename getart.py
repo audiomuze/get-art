@@ -667,14 +667,17 @@ class ProcessingLogger:
 
     LOG_FILENAME = "getart.log"
     FAILED_LOG_FILENAME = "getart-failed-lookups.log"
+    FALLBACK_LOG_FILENAME = "getart-fallback-lookups.log"
 
     def __init__(self, log_dir: str):
         """Initialize logger with directory path."""
         self.log_dir = os.path.abspath(log_dir)
         self.log_file = os.path.join(self.log_dir, self.LOG_FILENAME)
         self.failed_log_file = os.path.join(self.log_dir, self.FAILED_LOG_FILENAME)
+        self.fallback_log_file = os.path.join(self.log_dir, self.FALLBACK_LOG_FILENAME)
         self.successful_folders = self._load_log(self.log_file)
         self.failed_folders = self._load_log(self.failed_log_file)
+        self.fallback_folders = self._load_log(self.fallback_log_file)
 
     def _load_log(self, file_path: str) -> set:
         """Load folder identifiers from the specified log file."""
@@ -763,6 +766,10 @@ class ProcessingLogger:
         """Check if folder previously failed to retrieve artwork."""
         return folder_path in self.failed_folders
 
+    def is_fallback(self, folder_path: str) -> bool:
+        """Check if folder previously produced only fallback artwork."""
+        return folder_path in self.fallback_folders
+
     def log_success(self, folder_path: str, artist: str, album: str, output_file: str):
         """Log a successful processing"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -784,6 +791,7 @@ class ProcessingLogger:
 
             # Update in-memory cache
             self.successful_folders.add(folder_path)
+            self.clear_fallback(folder_path)
 
         except Exception as e:
             print(f"Warning: Could not write to log file: {e}")
@@ -820,10 +828,67 @@ class ProcessingLogger:
         except Exception as e:
             print(f"Warning: Could not write to failed log file: {e}")
 
+    def clear_fallback(self, folder_path: str):
+        """Remove a folder from the fallback log."""
+        if folder_path not in self.fallback_folders:
+            return
+
+        try:
+            if os.path.exists(self.fallback_log_file):
+                with open(self.fallback_log_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+
+                prefix = f"{folder_path} |"
+                with open(self.fallback_log_file, 'w', encoding='utf-8') as f:
+                    for line in lines:
+                        if line.startswith(prefix):
+                            continue
+                        f.write(line)
+        except Exception as e:
+            print(f"Warning: Could not prune fallback log entry for {folder_path}: {e}")
+        finally:
+            self.fallback_folders.discard(folder_path)
+
+    def log_fallback(self, folder_path: str, artist: str, album: str, output_file: str, reason: str):
+        """Log an entry that only produced fallback artwork."""
+        if not folder_path:
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"{folder_path} | {artist} | {album} | {output_file} | {reason} | {timestamp}"
+
+        try:
+            self._ensure_log_header(
+                self.fallback_log_file,
+                [
+                    "# Artwork Downloader Fallback Log",
+                    "# Entries recorded here only produced partial Apple matches",
+                    "# Use --retry-fallbacks (or --fallback-only) to reprocess them",
+                    "# Format: Folder Identifier | Artist | Album | Output File | Reason | Timestamp",
+                    "# " + "=" * 80
+                ]
+            )
+
+            entry_written = False
+
+            if folder_path in self.fallback_folders:
+                entry_written = self._replace_log_entry(self.fallback_log_file, folder_path, log_entry)
+
+            if not entry_written:
+                with open(self.fallback_log_file, 'a', encoding='utf-8') as f:
+                    f.write(log_entry + "\n")
+                entry_written = True
+
+            if entry_written:
+                self.fallback_folders.add(folder_path)
+        except Exception as e:
+            print(f"Warning: Could not write to fallback log file: {e}")
+
 
 def process_directory(directory: str, verbose: bool = False, throttle: float = 0,
                       ignore_log: bool = False, overwrite: bool = False,
-                      retry_failed: bool = False, retry_only: bool = False):
+                      retry_failed: bool = False, retry_only: bool = False,
+                      retry_fallbacks: bool = False, fallback_only: bool = False):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -853,6 +918,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
     if retry_only:
         retry_failed = True
+    if fallback_only:
+        retry_fallbacks = True
 
     subfolders = [
         item for item in os.listdir(directory)
@@ -882,6 +949,21 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     for i, folder in enumerate(subfolders, 1):
         folder_path = os.path.join(directory, folder)
         is_failed_entry = logger.is_failed(folder_path)
+        is_fallback_entry = logger.is_fallback(folder_path)
+
+        if fallback_only and not is_fallback_entry:
+            skipped += 1
+            continue
+
+        if not fallback_only and not retry_fallbacks and is_fallback_entry:
+            if verbose:
+                log_action(
+                    i,
+                    folder,
+                    f"SKIPPED: partial-match entry (see {logger.fallback_log_file}); use --retry-fallbacks to reprocess"
+                )
+            skipped += 1
+            continue
 
         if retry_only and not is_failed_entry:
             skipped += 1
@@ -948,7 +1030,19 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 )
 
                 if used_fallback_name:
-                    log_action(i, folder, f"SUCCESS: saved to {final_path} (partial Apple match; not logged)")
+                    match_label = downloader.last_match_type or "partial"
+                    log_action(
+                        i,
+                        folder,
+                        f"SUCCESS: saved to {final_path} (partial Apple match logged for retry)")
+                    logger.log_fallback(
+                        folder_path,
+                        artist,
+                        album,
+                        final_path,
+                        f"{match_label} match"
+                    )
+                    logger.clear_failure(folder_path)
                 else:
                     log_action(i, folder, f"SUCCESS: saved to {final_path}")
                     logger.log_success(folder_path, artist, album, final_path)
@@ -972,7 +1066,15 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                         logger.log_success(folder_path, fb_artist, fb_album, final_path)
                         logger.clear_failure(folder_path)
                     else:
-                        log_action(i, folder, "NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
+                        logger.log_fallback(
+                            folder_path,
+                            fb_artist,
+                            fb_album,
+                            final_path,
+                            "tag fallback partial match"
+                        )
+                        logger.clear_failure(folder_path)
+                        log_action(i, folder, "NOTE: Partial Apple match via tags; logged for targeted retry.")
                 else:
                     failed += 1
                     reason = "Artwork not found"
@@ -1011,7 +1113,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
 def process_directory_file(list_file: str, verbose: bool = False, throttle: float = 0,
                            overwrite: bool = False, ignore_log: bool = False,
-                           retry_failed: bool = False, retry_only: bool = False) -> dict:
+                           retry_failed: bool = False, retry_only: bool = False,
+                           retry_fallbacks: bool = False, fallback_only: bool = False) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -1043,6 +1146,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
 
     if retry_only:
         retry_failed = True
+    if fallback_only:
+        retry_fallbacks = True
 
     print(f"Loaded {total} path(s) from '{list_file}'")
     print("-" * 60)
@@ -1079,9 +1184,11 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
 
     work_items = []
     prefiltered_failures = 0
+    prefiltered_fallbacks = 0
     for info in entry_infos:
         log_key = info.get("log_key")
         is_failed_entry = logger.is_failed(log_key) if log_key else False
+        is_fallback_entry = logger.is_fallback(log_key) if log_key else False
 
         if retry_only:
             if is_failed_entry:
@@ -1089,6 +1196,18 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             else:
                 skipped += 1
                 continue
+
+        if fallback_only:
+            if is_fallback_entry:
+                pass
+            else:
+                skipped += 1
+                continue
+
+        if log_key and not fallback_only and not retry_fallbacks and is_fallback_entry:
+            prefiltered_fallbacks += 1
+            skipped += 1
+            continue
 
         if log_key and not retry_only and not ignore_log and logger.is_successful(log_key):
             skipped += 1
@@ -1105,6 +1224,11 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         print(
             f"Skipped {prefiltered_failures} entr{'y' if prefiltered_failures == 1 else 'ies'} due to previous failures "
             f"(see {logger.failed_log_file}); rerun with --retry to include them."
+        )
+    if prefiltered_fallbacks:
+        print(
+            f"Skipped {prefiltered_fallbacks} partial-match entr{'y' if prefiltered_fallbacks == 1 else 'ies'} "
+            f"(see {logger.fallback_log_file}); rerun with --retry-fallbacks to include them."
         )
 
     for idx, info in enumerate(work_items, 1):
@@ -1160,7 +1284,16 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     if log_key:
                         logger.clear_failure(log_key)
                 else:
-                    print("    NOTE: Partial Apple match; entry not logged so it can be retried later.")
+                    logger.log_fallback(
+                        log_key,
+                        artist,
+                        album,
+                        final_path,
+                        f"{downloader.last_match_type or 'partial'} match"
+                    )
+                    if log_key:
+                        logger.clear_failure(log_key)
+                    print("    NOTE: Partial Apple match; entry logged separately so you can target it later.")
             else:
                 fallback_success = False
                 fallback_attempted = False
@@ -1186,7 +1319,16 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                         if log_key:
                             logger.clear_failure(log_key)
                     else:
-                        print("    NOTE: Partial Apple match via tags; not logging so it can be retried later.")
+                        logger.log_fallback(
+                            log_key,
+                            fb_artist,
+                            fb_album,
+                            final_path,
+                            "tag fallback partial match"
+                        )
+                        if log_key:
+                            logger.clear_failure(log_key)
+                        print("    NOTE: Partial Apple match via tags; logged so you can retry when Apple improves.")
                 else:
                     failed += 1
                     reason = "Artwork not found"
@@ -1289,6 +1431,16 @@ Examples:
         action="store_true",
         help="Process only the entries listed in getart-failed-lookups.log"
     )
+    parser.add_argument(
+        "--retry-fallbacks",
+        action="store_true",
+        help="Include entries recorded in getart-fallback-lookups.log"
+    )
+    parser.add_argument(
+        "--fallback-only",
+        action="store_true",
+        help="Process only the entries listed in getart-fallback-lookups.log"
+    )
 
     # Common arguments
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
@@ -1304,6 +1456,11 @@ Examples:
 
     if getattr(args, "retry_only", False):
         args.retry = True
+
+    if getattr(args, "fallback_only", False):
+        if getattr(args, "retry_only", False):
+            parser.error("--fallback-only cannot be combined with --retry-only")
+        args.retry_fallbacks = True
 
     return args
 
@@ -1335,7 +1492,9 @@ def main():
                 ignore_log=args.ignore_log,
                 overwrite=args.overwrite,
                 retry_failed=args.retry,
-                retry_only=args.retry_only
+                retry_only=args.retry_only,
+                retry_fallbacks=args.retry_fallbacks,
+                fallback_only=args.fallback_only
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -1346,7 +1505,9 @@ def main():
                 overwrite=args.overwrite,
                 ignore_log=args.ignore_log,
                 retry_failed=args.retry,
-                retry_only=args.retry_only
+                retry_only=args.retry_only,
+                retry_fallbacks=args.retry_fallbacks,
+                fallback_only=args.fallback_only
             )
         else:
             # Single artwork mode
