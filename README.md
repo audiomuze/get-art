@@ -92,6 +92,7 @@ Options:
 - `--ignore-log` to reprocess folders that were logged as successful.
 - `--overwrite` to replace existing `xfolder.jpg` files.
 - `--retry` to reprocess entries listed in `getart-failed-lookups.log` (stored alongside `getart.log` in the target directory).
+- `--retry-only` to ignore every other folder and process just the paths listed in `getart-failed-lookups.log`.
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
 
 ### 3. File-Driven Mode (`--dirs2process`)
@@ -108,6 +109,7 @@ Behavior:
 - If a folder is missing, artwork is saved to the directory you launched the script from using the filename `Artist - Album xfolder.jpg` (illegal filename characters are sanitized automatically).
 - Successful entries are logged to `getart.log` in the directory where you launched the script, so future runs can skip them unless you pass `--ignore-log`.
 - Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`.
+- Pair `--retry-only` with `--dirs2process` when you want the file-driven mode to run exclusively on paths that are already captured in `getart-failed-lookups.log`.
 - No directories are created when entries are missing.
 
 ## Tag-Based Fallback (Optional)

@@ -744,7 +744,7 @@ class ProcessingLogger:
 
 def process_directory(directory: str, verbose: bool = False, throttle: float = 0,
                       ignore_log: bool = False, overwrite: bool = False,
-                      retry_failed: bool = False):
+                      retry_failed: bool = False, retry_only: bool = False):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -772,6 +772,9 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     downloader = AppleMusicArtworkDownloader(verbose=verbose, throttle=throttle)
     logger = ProcessingLogger(directory)
 
+    if retry_only:
+        retry_failed = True
+
     # Get all subdirectories
     subfolders = []
     for item in os.listdir(directory):
@@ -796,14 +799,21 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         folder_path = os.path.join(directory, folder)
         print(f"[{i}/{total}] Processing: {folder}")
 
-        # 1a. Check if folder is in success log
-        if not ignore_log and logger.is_successful(folder_path):
+        # 1a. Check if folder is in success log (unless retry-only)
+        if not retry_only and not ignore_log and logger.is_successful(folder_path):
             print(f"  SKIPPED: Previously successfully processed (see log)")
             skipped += 1
             continue
 
+        is_failed_entry = logger.is_failed(folder_path)
+
+        if retry_only and not is_failed_entry:
+            print("  SKIPPED: Not recorded in failed lookup log (--retry-only active)")
+            skipped += 1
+            continue
+
         # 1b. Check if folder is in failed log
-        if not retry_failed and logger.is_failed(folder_path):
+        if not retry_failed and is_failed_entry:
             print(
                 f"  SKIPPED: Previously failed lookup (see {logger.failed_log_file}); use --retry to reprocess"
             )
@@ -919,7 +929,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
 def process_directory_file(list_file: str, verbose: bool = False, throttle: float = 0,
                            overwrite: bool = False, ignore_log: bool = False,
-                           retry_failed: bool = False) -> dict:
+                           retry_failed: bool = False, retry_only: bool = False) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -948,6 +958,9 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     failed = 0
     skipped = 0
     rate_limit_error = None
+
+    if retry_only:
+        retry_failed = True
 
     print(f"Loaded {total} path(s) from '{list_file}'")
     print("-" * 60)
@@ -986,10 +999,19 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     prefiltered_failures = 0
     for info in entry_infos:
         log_key = info.get("log_key")
-        if log_key and not ignore_log and logger.is_successful(log_key):
+        is_failed_entry = logger.is_failed(log_key) if log_key else False
+
+        if retry_only:
+            if is_failed_entry:
+                pass
+            else:
+                skipped += 1
+                continue
+
+        if log_key and not retry_only and not ignore_log and logger.is_successful(log_key):
             skipped += 1
             continue
-        if log_key and not retry_failed and logger.is_failed(log_key):
+        if log_key and not retry_failed and is_failed_entry:
             prefiltered_failures += 1
             skipped += 1
             continue
@@ -1176,6 +1198,11 @@ Examples:
         action="store_true",
         help="Retry entries recorded in getart-failed-lookups.log"
     )
+    parser.add_argument(
+        "--retry-only",
+        action="store_true",
+        help="Process only the entries listed in getart-failed-lookups.log"
+    )
 
     # Common arguments
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
@@ -1187,7 +1214,12 @@ Examples:
         print("\nERROR: No arguments provided. Choose either --artist or --dir mode.")
         sys.exit(1)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if getattr(args, "retry_only", False):
+        args.retry = True
+
+    return args
 
 
 def validate_single_mode_arguments(args):
@@ -1216,7 +1248,8 @@ def main():
                 throttle=args.throttle,
                 ignore_log=args.ignore_log,
                 overwrite=args.overwrite,
-                retry_failed=args.retry
+                retry_failed=args.retry,
+                retry_only=args.retry_only
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -1226,7 +1259,8 @@ def main():
                 throttle=args.throttle,
                 overwrite=args.overwrite,
                 ignore_log=args.ignore_log,
-                retry_failed=args.retry
+                retry_failed=args.retry,
+                retry_only=args.retry_only
             )
         else:
             # Single artwork mode
