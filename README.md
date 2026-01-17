@@ -1,6 +1,6 @@
 # Apple Music Artwork Downloader
 
-Download the highest-resolution (up to 9999×9999) Apple Music artwork for your library using simple command-line workflows. The script can operate on one album/track, on every folder under a root directory, or on explicit folder paths listed inside a text file. All modes are resumable, polite to Apple’s API, and require only the Python standard library.
+Download the highest-resolution (up to 9999×9999) Apple Music artwork for your library using simple command-line workflows. The script can operate on one album/track, on every folder under a root directory, or on explicit folder paths listed inside a text file. All modes are resumable, polite to Apple’s API, and rely on the Python standard library plus RapidFuzz (for scoring) and Mutagen (for tag-based fallbacks).
 
 ## Features
 
@@ -9,17 +9,25 @@ Download the highest-resolution (up to 9999×9999) Apple Music artwork for your 
 - Batch directory processing with automatic logging so previously successful folders are skipped unless you opt in.
 - File-driven processing for curated folder lists, saving art either in-place or to the current working directory when folders are missing.
 - Separate success and failure logs (`getart.log` and `getart-failed-lookups.log`) keep runs resumable; use `--retry` when you want to reattempt previously failed lookups.
+- Optional tag-based fallback: if [Mutagen](https://mutagen.readthedocs.io/) is installed, the script inspects the first audio file in a folder and cycles through its `albumartist`/`artist` tags when the folder name lookup fails.
+- Fuzzy Apple matches are quarantined: the artwork is saved as `xfolder_fallback.jpg`, not logged as successful, and can be revisited later.
+- [RapidFuzz](https://maxbachmann.github.io/RapidFuzz/) scoring ranks partial matches so the closest release wins whenever Apple doesn’t return an exact title hit.
+- Disc-aware parsing automatically falls back to the parent folder’s `Artist - Album` name whenever a subfolder looks like `CD1`, `Disc 2`, `Blu-Ray`, or other box-set media splits.
 - Built-in rate-limit handling: escalates to 5-second delays when Apple throttles and exits cleanly if throttling continues.
 
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/get-art.git
+git clone https://github.com/audiomuze/get-art.git
 cd get-art
 python3 getart.py --help
+# Install runtime dependencies (RapidFuzz + Mutagen) using uv
+uv pip install -r requirements.txt
 ```
 
-Python 3.8+ is recommended. No third-party packages are required.
+If you are not using [uv](https://github.com/astral-sh/uv), regular `pip install -r requirements.txt` works too.
+
+Python 3.8+ is recommended. RapidFuzz and Mutagen are installed via `requirements.txt`; without Mutagen the tag-based fallback is skipped automatically.
 
 ## Command-Line Modes
 
@@ -73,6 +81,10 @@ Behavior:
 - Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`.
 - No directories are created when entries are missing.
 
+## Tag-Based Fallback (Optional)
+
+When Mutagen is installed, both batch and file-driven modes automatically fall back to embedded tags whenever the initial Apple lookup fails. The script grabs the first supported audio file in the target folder, reads its `albumartist`/`artist` and `album` tags, builds every distinct combination, and retries the lookup for each combo until one succeeds (or all fail). If Apple only returns a partial overlap during this process, the resulting artwork is written as `xfolder_fallback.jpg` and purposely left out of `getart.log` so you can retry later. No additional flags are required; if Mutagen isn’t available or the folder lacks tagged files, the behavior remains unchanged.
+
 ## Rate Limiting & Retries
 
 - Initial requests use your chosen `--throttle` (default 1s).
@@ -93,6 +105,7 @@ Each basename is parsed as `Artist - Album`; square-bracket and parenthetical su
 ## Tips
 
 - Folder names must contain a literal ` - ` separating artist and album. Additional tags can live in `[...]` or `(...)` and will be ignored during lookup.
+- Disc/box-set folders such as `CD1`, `Disc 2`, or `Blu-Ray` inherit artist/album metadata from their parent folder automatically, so you can feed nested structures directly.
 - Use `--title` only when you’re targeting single tracks that lack an album directory.
 - Combine `--ignore-log` with `--overwrite` to rebuild all artwork files from scratch.
 - The helper function `get_apple_music_artwork()` can be imported into other scripts if you prefer direct Python API usage.

@@ -14,6 +14,41 @@ import argparse
 import sys
 from datetime import datetime
 
+try:
+    from mutagen import File as MutagenFile
+except ImportError:  # pragma: no cover - optional dependency
+    MutagenFile = None
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:  # pragma: no cover - optional dependency
+    fuzz = None
+
+
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".flac",
+    ".mp3",
+    ".m4a",
+    ".m4b",
+    ".m4p",
+    ".mp4",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".wv",
+    ".wma",
+    ".aiff",
+    ".aif",
+    ".aifc",
+    ".ape",
+    ".alac",
+    ".dsf",
+    ".dff"
+}
+
+FUZZY_SCORE_THRESHOLD = 90.0
+
 
 class RateLimitExceededError(RuntimeError):
     """Raised when Apple Music continues throttling after enforced backoff."""
@@ -47,9 +82,12 @@ class AppleMusicArtworkDownloader:
         self.MAX_RETRIES = 5
         self.rate_limit_delay = 0.0
         self.rate_limit_escalated = False
+        self.last_match_type = None
 
         if self.verbose:
             print(f"Initialized with size={self.ART_SIZE}, quality={self.ART_QUALITY}")
+            if fuzz is None:
+                print("RapidFuzz not available; fuzzy scoring will fall back to simple overlap checks.")
 
     @property
     def current_delay(self) -> float:
@@ -135,10 +173,10 @@ class AppleMusicArtworkDownloader:
             return {}
 
     def _find_best_artwork_url(self, results: list, artist: str, album: str = None,
-                               title: str = None) -> str:
-        """Find the best matching artwork URL from search results"""
+                               title: str = None) -> tuple[str, str]:
+        """Find the best matching artwork URL and classify match strictness."""
         if not results:
-            return None
+            return None, None
 
         artist_lower = artist.lower()
         album_lower = album.lower() if album else None
@@ -162,8 +200,15 @@ class AppleMusicArtworkDownloader:
         def artist_matches(result_artist_lower: str) -> bool:
             return is_overlap(artist_lower, result_artist_lower)
 
+        def fuzzy_ratio(text_a: str, text_b: str) -> float:
+            if not text_a or not text_b:
+                return 0.0
+            if fuzz:
+                return float(fuzz.token_set_ratio(text_a, text_b))
+            return 100.0 if is_overlap(text_a, text_b) else 0.0
+
         if album_lower:
-            partial_album_match = None
+            best_fuzzy_candidate = (None, None, 0.0)
             first_artist_match = None
 
             for result in results:
@@ -183,18 +228,23 @@ class AppleMusicArtworkDownloader:
                 if album_lower == result_album_lower:
                     if self.verbose:
                         print(f"Found exact album match: {result_artist_raw} - {result_album_raw}")
-                    return art_url
+                    return art_url, "exact"
 
-                if not partial_album_match and is_overlap(album_lower, result_album_lower):
-                    partial_album_match = art_url
+                score = fuzzy_ratio(album_lower, result_album_lower)
+                if score >= FUZZY_SCORE_THRESHOLD and score > best_fuzzy_candidate[2]:
+                    best_fuzzy_candidate = (art_url, "fuzzy", score)
 
                 if not first_artist_match:
-                    first_artist_match = art_url
+                    first_artist_match = (art_url, "artist")
 
-            return partial_album_match or first_artist_match
+            if best_fuzzy_candidate[0]:
+                return best_fuzzy_candidate[0], best_fuzzy_candidate[1]
+            if first_artist_match:
+                return first_artist_match
+            return None, None
 
         # No album specified; match on artist and optionally title
-        partial_title_match = None
+        best_fuzzy_candidate = (None, None, 0.0)
         first_artist_match = None
 
         for result in results:
@@ -215,15 +265,20 @@ class AppleMusicArtworkDownloader:
                 if title_lower == result_title_lower:
                     if self.verbose:
                         print(f"Found exact track match: {result_artist_raw} - {result_title_raw}")
-                    return art_url
+                    return art_url, "exact"
 
-                if not partial_title_match and is_overlap(title_lower, result_title_lower):
-                    partial_title_match = art_url
+                score = fuzzy_ratio(title_lower, result_title_lower)
+                if score >= FUZZY_SCORE_THRESHOLD and score > best_fuzzy_candidate[2]:
+                    best_fuzzy_candidate = (art_url, "fuzzy", score)
 
             if not first_artist_match:
-                first_artist_match = art_url
+                first_artist_match = (art_url, "artist")
 
-        return partial_title_match or first_artist_match
+        if best_fuzzy_candidate[0]:
+            return best_fuzzy_candidate[0], best_fuzzy_candidate[1]
+        if first_artist_match:
+            return first_artist_match
+        return None, None
 
     def get_artwork(self, artist: str, album: str = None, title: str = None) -> bytes:
         """
@@ -237,6 +292,8 @@ class AppleMusicArtworkDownloader:
         Returns:
             bytes: Raw image data, or None if not found
         """
+        self.last_match_type = None
+
         if self.verbose:
             print(f"\nSearching for artwork: Artist='{artist}', Album='{album}', Title='{title}'")
 
@@ -253,12 +310,14 @@ class AppleMusicArtworkDownloader:
             print(f"Found {len(results)} result(s)")
 
         # Find the best matching artwork URL
-        art_url = self._find_best_artwork_url(results, artist, album, title)
+        art_url, match_type = self._find_best_artwork_url(results, artist, album, title)
 
         if not art_url:
             if self.verbose:
                 print("No suitable artwork URL found")
             return None
+
+        self.last_match_type = match_type or "exact"
 
         # Download the artwork
         try:
@@ -351,6 +410,214 @@ def sanitize_filename(name: str) -> str:
     sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
     return sanitized or "xfolder.jpg"
+
+
+def _append_suffix_to_filename(path: str, suffix: str = "_fallback") -> str:
+    """Return a new path with suffix inserted before the extension."""
+    directory, filename = os.path.split(path)
+    base, ext = os.path.splitext(filename or "xfolder.jpg")
+    if not ext:
+        ext = ".jpg"
+    new_name = f"{base}{suffix}{ext}"
+    return os.path.join(directory, new_name)
+
+
+def _finalize_output_path(path: str, match_type: str) -> tuple[str, bool]:
+    """Rename artwork to *_fallback when Apple returned only a partial/artist/fuzzy match."""
+    if match_type not in {"partial", "artist", "fuzzy"}:
+        return path, False
+
+    fallback_path = _append_suffix_to_filename(path)
+    if fallback_path == path:
+        return path, True
+
+    try:
+        if os.path.exists(path):
+            os.replace(path, fallback_path)
+    except FileNotFoundError:
+        pass
+    return fallback_path, True
+
+
+STRICT_DISC_KEYWORDS = (
+    "cd",
+    "disc",
+    "disk",
+    "dvd",
+    "bluray",
+    "blu-ray",
+    "blueray",
+    "bd",
+    "br",
+    "sacd",
+    "lp",
+    "vinyl",
+    "uhq",
+    "uhcd"
+)
+
+OPTIONAL_SUFFIX_DISC_KEYWORDS = (
+    "boxset",
+    "box",
+    "set"
+)
+
+
+def _looks_like_disc_folder(name: str) -> bool:
+    """Return True when folder name resembles a disc/CD/DVD subfolder."""
+    if not name:
+        return False
+
+    normalized = name.strip().lower().replace('–', '-')
+    compact = re.sub(r'[\s._-]+', '', normalized)
+
+    for keyword in STRICT_DISC_KEYWORDS:
+        compact_keyword = keyword.replace('-', '')
+        if compact.startswith(compact_keyword):
+            return True
+
+    for keyword in OPTIONAL_SUFFIX_DISC_KEYWORDS:
+        compact_keyword = keyword.replace('-', '')
+        if compact.startswith(compact_keyword):
+            remainder = compact[len(compact_keyword):]
+            if remainder and (remainder[0].isdigit() or remainder[0] in "ivxlcdmab"):
+                return True
+
+    return False
+
+
+def derive_artist_album_from_path(folder_path: str):
+    """Derive artist/album metadata from folder or its parent if needed."""
+    normalized_path = (folder_path or '').rstrip('/\\')
+    folder_name = os.path.basename(normalized_path) or ''
+    artist, album = parse_folder_name(folder_name)
+    if artist and album:
+        return artist, album, folder_name, False
+
+    parent_path = os.path.dirname(normalized_path)
+    parent_name = os.path.basename(parent_path) or ''
+
+    if folder_name and parent_name and _looks_like_disc_folder(folder_name):
+        parent_artist, parent_album = parse_folder_name(parent_name)
+        if parent_artist and parent_album:
+            return parent_artist, parent_album, parent_name, True
+
+    return artist, album, folder_name, False
+
+
+def _dedupe_preserve_order(values):
+    """Return a list with duplicates removed while preserving order."""
+    seen = set()
+    result = []
+    for value in values:
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _find_first_audio_file(folder_path: str) -> str:
+    """Return the first audio file (sorted) with an extension Mutagen can parse."""
+    try:
+        entries = sorted(os.listdir(folder_path))
+    except Exception:
+        return None
+
+    for entry in entries:
+        candidate = os.path.join(folder_path, entry)
+        if not os.path.isfile(candidate):
+            continue
+        _, ext = os.path.splitext(entry)
+        if ext.lower() in SUPPORTED_AUDIO_EXTENSIONS:
+            return candidate
+    return None
+
+
+def _extract_tag_candidates(audio_path: str, verbose: bool = False):
+    """Return unique (artist, album) combos from the first audio file's tags."""
+    if MutagenFile is None:
+        return []
+
+    try:
+        audio = MutagenFile(audio_path, easy=True)
+    except Exception as exc:
+        if verbose:
+            print(f"  TAG FALLBACK: Unable to read tags from '{os.path.basename(audio_path)}' ({exc})")
+        return []
+
+    if not audio:
+        if verbose:
+            print(f"  TAG FALLBACK: '{os.path.basename(audio_path)}' is not a supported audio file")
+        return []
+
+    album_values = _dedupe_preserve_order(audio.get("album", []))
+    if not album_values:
+        if verbose:
+            print("  TAG FALLBACK: No 'album' tag present; skipping tag-based retry")
+        return []
+
+    artist_values = _dedupe_preserve_order(audio.get("albumartist", []) + audio.get("artist", []))
+    if not artist_values:
+        if verbose:
+            print("  TAG FALLBACK: No 'albumartist' or 'artist' tags present; skipping")
+        return []
+
+    combos = []
+    seen = set()
+    for artist in artist_values:
+        artist_clean = re.sub(r'\s+', ' ', artist.strip())
+        if not artist_clean:
+            continue
+        for album in album_values:
+            album_clean = re.sub(r'\s+', ' ', album.strip())
+            if not album_clean:
+                continue
+            key = (artist_clean.lower(), album_clean.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            combos.append((artist_clean, album_clean))
+    return combos
+
+
+def attempt_tag_based_fallback(folder_path: str, downloader: AppleMusicArtworkDownloader,
+                               output_path: str, verbose: bool = False):
+    """Try to retrieve artwork using tags from the first audio file in folder."""
+    if MutagenFile is None:
+        if verbose:
+            print("  TAG FALLBACK: Mutagen not installed; skipping tag-based retry")
+        return False, None, None, False
+
+    audio_path = _find_first_audio_file(folder_path)
+    if not audio_path:
+        if verbose:
+            print("  TAG FALLBACK: No supported audio files found for tag retry")
+        return False, None, None, False
+
+    if verbose:
+        print(f"  TAG FALLBACK: Inspecting tags from '{os.path.basename(audio_path)}'")
+
+    candidates = _extract_tag_candidates(audio_path, verbose=verbose)
+    if not candidates:
+        return False, None, None, True
+
+    for artist_candidate, album_candidate in candidates:
+        if verbose:
+            print(f"  TAG FALLBACK: Trying Artist='{artist_candidate}', Album='{album_candidate}'")
+        if downloader.save_artwork(
+            artist=artist_candidate,
+            album=album_candidate,
+            filename=output_path
+        ):
+            return True, artist_candidate, album_candidate, True
+
+    if verbose:
+        print("  TAG FALLBACK: All tag-derived combinations failed")
+    return False, None, None, True
 
 
 class ProcessingLogger:
@@ -522,27 +789,31 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             skipped += 1
             continue
 
+        artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(folder_path)
+
         # 2. Check if xfolder.jpg exists
         output_path = os.path.join(folder_path, "xfolder.jpg")
         if os.path.exists(output_path) and not overwrite:
             print(f"  SKIPPED: xfolder.jpg already exists (use --overwrite to force)")
             # Log it as successful since xfolder.jpg exists
-            artist, album = parse_folder_name(folder)
             if artist and album:
                 logger.log_success(folder_path, artist, album, output_path)
             skipped += 1
             continue
 
-        # 3. Parse artist and album from folder name
-        artist, album = parse_folder_name(folder)
-
         if not artist or not album:
-            print(f"  SKIPPED: Invalid folder format. Expected 'Artist - Album'")
+            if used_parent_metadata:
+                print("  SKIPPED: Unable to derive artist/album even after checking parent folder")
+            else:
+                print(f"  SKIPPED: Invalid folder format. Expected 'Artist - Album'")
             failed += 1  # Count as failed since we can't even try
             continue
 
         if verbose:
-            print(f"  Parsed: Artist='{artist}', Album='{album}'")
+            if used_parent_metadata and metadata_source:
+                print(f"  Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
+            else:
+                print(f"  Parsed: Artist='{artist}', Album='{album}'")
 
         # Validate that the folder exists before writing
         if not os.path.exists(folder_path):
@@ -552,19 +823,49 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
         # Download and save artwork
         try:
-            if downloader.save_artwork(
+            lookup_success = downloader.save_artwork(
                 artist=artist,
                 album=album,
                 filename=output_path
-            ):
+            )
+
+            if lookup_success:
                 success += 1
-                print(f"  SUCCESS: Artwork saved to {output_path}")
-                # Only log successful completions
-                logger.log_success(folder_path, artist, album, output_path)
+                final_path, used_fallback_name = _finalize_output_path(
+                    output_path, downloader.last_match_type
+                )
+
+                if used_fallback_name:
+                    print(
+                        f"  SUCCESS: Artwork saved to {final_path} (partial Apple match, not logged for retry visibility)"
+                    )
+                else:
+                    print(f"  SUCCESS: Artwork saved to {final_path}")
+                    logger.log_success(folder_path, artist, album, final_path)
             else:
-                failed += 1
-                print(f"  FAILED: Could not find artwork for {artist} - {album}")
-                logger.log_failure(folder_path, artist, album, "Artwork not found")
+                fallback_success, fb_artist, fb_album, fallback_attempted = attempt_tag_based_fallback(
+                    folder_path, downloader, output_path, verbose=verbose
+                )
+
+                if fallback_success:
+                    success += 1
+                    final_path, used_fallback_name = _finalize_output_path(
+                        output_path, downloader.last_match_type
+                    )
+                    print(
+                        f"  SUCCESS: Artwork saved to {final_path} using tag fallback ({fb_artist} - {fb_album})"
+                    )
+                    if not used_fallback_name:
+                        logger.log_success(folder_path, fb_artist, fb_album, final_path)
+                    else:
+                        print("    NOTE: Partial Apple match via tags; not logging so folder can be retried later.")
+                else:
+                    failed += 1
+                    reason = "Artwork not found"
+                    if fallback_attempted:
+                        reason += " (tag fallback unavailable or unsuccessful)"
+                    print(f"  FAILED: Could not find artwork for {artist} - {album}")
+                    logger.log_failure(folder_path, artist, album, reason)
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting batch early.")
             rate_limit_error = exc
@@ -634,15 +935,16 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     for entry in raw_lines:
         dir_path = os.path.abspath(entry)
         folder_exists = os.path.isdir(dir_path)
-        folder_name = os.path.basename(dir_path.rstrip('/\\'))
-        artist, album = parse_folder_name(folder_name)
+        artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(dir_path)
         info = {
             "entry": entry,
             "dir_path": dir_path,
             "folder_exists": folder_exists,
             "artist": artist,
             "album": album,
-            "valid": bool(artist and album)
+            "valid": bool(artist and album),
+            "metadata_source": metadata_source,
+            "used_parent_metadata": used_parent_metadata
         }
 
         if info["valid"]:
@@ -683,19 +985,28 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     for idx, info in enumerate(work_items, 1):
         entry = info["entry"]
         folder_exists = info["folder_exists"]
+        folder_path = info["dir_path"]
         artist = info["artist"]
         album = info["album"]
         valid = info["valid"]
+        metadata_source = info.get("metadata_source")
+        used_parent_metadata = info.get("used_parent_metadata")
         status_label = "Found" if folder_exists else "Missing"
         print(f"[{idx}/{work_total}] [{status_label}] Entry: {entry}")
 
         if not valid:
-            print("  SKIPPED: Unable to parse 'Artist - Album' from folder name")
+            if used_parent_metadata:
+                print("  SKIPPED: Unable to derive artist/album even after checking parent folder")
+            else:
+                print("  SKIPPED: Unable to parse 'Artist - Album' from folder name")
             failed += 1
             continue
 
         if verbose:
-            print(f"  Parsed: Artist='{artist}', Album='{album}'")
+            if used_parent_metadata and metadata_source:
+                print(f"  Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
+            else:
+                print(f"  Parsed: Artist='{artist}', Album='{album}'")
 
         output_path = info["output_path"]
         log_key = info["log_key"]
@@ -706,20 +1017,55 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             continue
 
         try:
-            if downloader.save_artwork(
+            lookup_success = downloader.save_artwork(
                 artist=artist,
                 album=album,
                 filename=output_path
-            ):
+            )
+
+            if lookup_success:
                 success += 1
                 destination = "directory" if folder_exists else "current working directory"
-                print(f"  SUCCESS: Artwork saved to {output_path} ({destination})")
-                logger.log_success(log_key, artist, album, output_path)
+                final_path, used_fallback_name = _finalize_output_path(
+                    output_path, downloader.last_match_type
+                )
+                print(f"  SUCCESS: Artwork saved to {final_path} ({destination})")
+                if not used_fallback_name:
+                    logger.log_success(log_key, artist, album, final_path)
+                else:
+                    print("    NOTE: Partial Apple match; entry not logged so it can be retried later.")
             else:
-                failed += 1
-                print(f"  FAILED: Could not find artwork for {artist} - {album}")
-                if log_key:
-                    logger.log_failure(log_key, artist, album, "Artwork not found")
+                fallback_success = False
+                fallback_attempted = False
+                fb_artist = None
+                fb_album = None
+
+                if folder_exists:
+                    fallback_success, fb_artist, fb_album, fallback_attempted = attempt_tag_based_fallback(
+                        folder_path, downloader, output_path, verbose=verbose
+                    )
+
+                if fallback_success:
+                    success += 1
+                    destination = "directory" if folder_exists else "current working directory"
+                    final_path, used_fallback_name = _finalize_output_path(
+                        output_path, downloader.last_match_type
+                    )
+                    print(
+                        f"  SUCCESS: Artwork saved to {final_path} ({destination}) using tag fallback ({fb_artist} - {fb_album})"
+                    )
+                    if not used_fallback_name:
+                        logger.log_success(log_key, fb_artist, fb_album, final_path)
+                    else:
+                        print("    NOTE: Partial Apple match via tags; not logging so it can be retried later.")
+                else:
+                    failed += 1
+                    reason = "Artwork not found"
+                    if fallback_attempted:
+                        reason += " (tag fallback unavailable or unsuccessful)"
+                    print(f"  FAILED: Could not find artwork for {artist} - {album}")
+                    if log_key:
+                        logger.log_failure(log_key, artist, album, reason)
         except RateLimitExceededError as exc:
             print("  STOPPED: Apple Music is still throttling requests. Halting file processing early.")
             rate_limit_error = exc

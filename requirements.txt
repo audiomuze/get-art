@@ -1,0 +1,2 @@
+rapidfuzz>=3.9
+mutagen>=1.47
