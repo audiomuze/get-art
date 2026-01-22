@@ -447,6 +447,9 @@ def parse_folder_name(folder_name: str):
     # Remove anything in square brackets (including the brackets)
     album = re.sub(r'\s*\[.*?\]\s*', ' ', album).strip()
 
+    # Remove bare year annotations like "(2025)"
+    album = _strip_year_parentheses(album)
+
     # Remove parenthetical notes only when they clearly describe audio quality/format
     album = _strip_quality_parentheses(album)
 
@@ -459,6 +462,9 @@ def parse_folder_name(folder_name: str):
 
 
 # Descriptors that represent file/encoding quality rather than the actual album title
+YEAR_PAREN_PATTERN = re.compile(r'\s*\((?:19|20)\d{2}\)\s*')
+
+
 QUALITY_KEYWORDS = (
     "hi-res",
     "hi res",
@@ -533,6 +539,11 @@ def _strip_quality_suffixes(text: str) -> str:
             break
         cleaned = new
     return re.sub(r'\s+', ' ', cleaned)
+
+
+def _strip_year_parentheses(text: str) -> str:
+    """Remove standalone four-digit year markers enclosed in parentheses."""
+    return YEAR_PAREN_PATTERN.sub(' ', text)
 
 
 def _looks_like_quality_note(note: str) -> bool:
