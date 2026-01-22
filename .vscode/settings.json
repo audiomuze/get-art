@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^/home/x/GitHub/get-art/\\.venv/bin/python - <<'PY'\nimport json, urllib\\.request, urllib\\.parse\nterm = urllib\\.parse\\.quote\\('Baby Nova Shhugar'\\)\nurl = f'https://itunes\\.apple\\.com/search\\?term=\\{term\\}&media=music&entity=musicTrack&country=gb'\nwith urllib\\.request\\.urlopen\\(url\\) as resp:\n    data = json\\.load\\(resp\\)\nfor result in data\\.get\\('results', \\[\\]\\):\n    print\\(result\\.get\\('artistName'\\), result\\.get\\('collectionName'\\), result\\.get\\('collectionId'\\)\\)\n    print\\('artwork:', result\\.get\\('artworkUrl100'\\)\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
