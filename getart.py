@@ -1172,7 +1172,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             continue
 
         if dry_run:
-            info_msg = f"\n       '{artist}' - '{album}'\n"
+            info_msg = f"\n       {artist} - {album}\n"
             if used_parent_metadata and metadata_source:
                 info_msg += f" (derived from '{metadata_source}')"
             log_action(i, folder, info_msg)
