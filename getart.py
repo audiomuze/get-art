@@ -110,6 +110,7 @@ class AppleMusicArtworkDownloader:
         self.rate_limit_delay = 0.0
         self.rate_limit_escalated = False
         self.last_match_type = None
+        self.last_query_entity = None
 
         if self.verbose:
             print(f"Initialized with size={self.ART_SIZE}, quality={self.ART_QUALITY}")
@@ -174,30 +175,53 @@ class AppleMusicArtworkDownloader:
                 raise
 
     def _query_itunes(self, artist: str, album: str = None, title: str = None) -> dict:
-        """Query iTunes Search API for music metadata"""
+        """Query iTunes Search API for music metadata."""
         token = album or title or ""
-        entity = "album" if album else "musicTrack"
         query_term = f"{artist} {token}".strip()
 
-        # Build search URL
-        url = f"https://itunes.apple.com/search?term={quote(query_term)}&media=music&entity={entity}"
+        # Prefer album search when album metadata is available, but fall back to
+        # track search if Apple has not indexed the album yet (e.g., preorders).
+        entity_sequence = ["album"] if album else ["musicTrack"]
+        if album:
+            entity_sequence.append("musicTrack")
 
-        if self.verbose:
-            print(f"Searching iTunes API: {artist} - {token}")
+        last_response = {}
+        for idx, entity in enumerate(entity_sequence):
+            url = (
+                f"https://itunes.apple.com/search?term={quote(query_term)}"
+                f"&media=music&entity={entity}"
+            )
 
-        try:
-            raw_json = self._urlopen_safe(url).decode("utf8")
-            return json.loads(raw_json)
-        except json.JSONDecodeError as e:
             if self.verbose:
-                print(f"Failed to parse JSON response: {e}")
-            return {}
-        except RateLimitExceededError:
-            raise
-        except Exception as e:
-            if self.verbose:
-                print(f"Error querying iTunes: {e}")
-            return {}
+                if idx == 0:
+                    print(f"Searching iTunes API ({entity}): {artist} - {token}")
+                else:
+                    print(
+                        "Primary album search returned no results; retrying as track search"
+                    )
+
+            try:
+                raw_json = self._urlopen_safe(url).decode("utf8")
+                info = json.loads(raw_json)
+            except json.JSONDecodeError as e:
+                if self.verbose:
+                    print(f"Failed to parse JSON response: {e}")
+                info = {}
+            except RateLimitExceededError:
+                raise
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error querying iTunes: {e}")
+                info = {}
+
+            last_response = info or {}
+            if last_response.get('resultCount'):
+                self.last_query_entity = entity
+                return last_response
+
+        # No results from any attempt; record the last entity we asked for.
+        self.last_query_entity = entity_sequence[-1]
+        return last_response
 
     def _find_best_artwork_url(self, results: list, artist: str, album: str = None,
                                title: str = None) -> tuple[str, str]:
