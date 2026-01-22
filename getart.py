@@ -1094,6 +1094,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
     total = len(subfolders)
     success = 0
+    fallback_successes = 0
+    fallback_successes = 0
     failed = 0
     skipped = 0
 
@@ -1204,6 +1206,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 )
 
                 if used_fallback_name:
+                    fallback_successes += 1
                     match_label = downloader.last_match_type or "partial"
                     log_action(
                         i,
@@ -1240,6 +1243,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                         logger.log_success(folder_path, fb_artist, fb_album, final_path)
                         logger.clear_failure(folder_path)
                     else:
+                        fallback_successes += 1
                         logger.log_fallback(
                             folder_path,
                             fb_artist,
@@ -1269,7 +1273,14 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         print("Processing interrupted by rate limiting; summary reflects completed folders only.")
 
     print("-" * 60)
-    print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
+    if fallback_successes:
+        definitive = success - fallback_successes
+        print(
+            f"Summary: {success} successful ({definitive} definitive, {fallback_successes} fallback), "
+            f"{failed} failed, {skipped} skipped"
+        )
+    else:
+        print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
     if os.path.exists(logger.log_file):
         print(f"Success log: {logger.log_file}")
 
@@ -1443,7 +1454,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         if dry_run:
             destination = folder_exists and folder_path or cwd
             msg = (
-                f"  DRY RUN: Artist='{artist}', Album='{album}'"
+                f"  \n         {artist}' - '{album}"
                 f" -> would save to {output_path} (in {destination})"
             )
             print(msg)
@@ -1469,6 +1480,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     if log_key:
                         logger.clear_failure(log_key)
                 else:
+                    fallback_successes += 1
                     logger.log_fallback(
                         log_key,
                         artist,
@@ -1504,6 +1516,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                         if log_key:
                             logger.clear_failure(log_key)
                     else:
+                        fallback_successes += 1
                         logger.log_fallback(
                             log_key,
                             fb_artist,
@@ -1535,7 +1548,14 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         print("Processing interrupted by rate limiting; summary reflects completed entries only.")
 
     print("-" * 60)
-    print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
+    if fallback_successes:
+        definitive = success - fallback_successes
+        print(
+            f"Summary: {success} successful ({definitive} definitive, {fallback_successes} fallback), "
+            f"{failed} failed, {skipped} skipped"
+        )
+    else:
+        print(f"Summary: {success} successful, {failed} failed, {skipped} skipped")
 
     if rate_limit_error:
         print("Processing stopped early due to continued rate limiting. Please retry later.")
