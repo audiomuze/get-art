@@ -970,7 +970,8 @@ class ProcessingLogger:
 def process_directory(directory: str, verbose: bool = False, throttle: float = 0,
                       ignore_log: bool = False, overwrite: bool = False,
                       retry_failed: bool = False, retry_only: bool = False,
-                      retry_fallbacks: bool = False, fallback_only: bool = False):
+                      retry_fallbacks: bool = False, fallback_only: bool = False,
+                      dry_run: bool = False):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -1098,6 +1099,14 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             failed += 1
             continue
 
+        if dry_run:
+            info_msg = f"DRY RUN: Artist='{artist}', Album='{album}'"
+            if used_parent_metadata and metadata_source:
+                info_msg += f" (derived from '{metadata_source}')"
+            log_action(i, folder, info_msg)
+            skipped += 1
+            continue
+
         try:
             lookup_success = downloader.save_artwork(
                 artist=artist,
@@ -1196,7 +1205,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 def process_directory_file(list_file: str, verbose: bool = False, throttle: float = 0,
                            overwrite: bool = False, ignore_log: bool = False,
                            retry_failed: bool = False, retry_only: bool = False,
-                           retry_fallbacks: bool = False, fallback_only: bool = False) -> dict:
+                           retry_fallbacks: bool = False, fallback_only: bool = False,
+                           dry_run: bool = False) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -1344,6 +1354,16 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
 
         if os.path.exists(output_path) and not overwrite:
             print(f"  SKIPPED: {output_path} already exists (use --overwrite to force)")
+            skipped += 1
+            continue
+
+        if dry_run:
+            destination = folder_exists and folder_path or cwd
+            msg = (
+                f"  DRY RUN: Artist='{artist}', Album='{album}'"
+                f" -> would save to {output_path} (in {destination})"
+            )
+            print(msg)
             skipped += 1
             continue
 
@@ -1527,6 +1547,7 @@ Examples:
     # Common arguments
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--throttle", type=float, default=1, help="Seconds to wait between requests (default: 1)")
+    parser.add_argument("--dry-run", action="store_true", help="Print derived lookup info without downloading artwork")
 
     # If no arguments provided, show extended help
     if len(sys.argv) == 1:
@@ -1578,7 +1599,8 @@ def main():
                 retry_failed=args.retry,
                 retry_only=args.retry_only,
                 retry_fallbacks=args.retry_fallbacks,
-                fallback_only=args.fallback_only
+                fallback_only=args.fallback_only,
+                dry_run=args.dry_run
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -1591,11 +1613,20 @@ def main():
                 retry_failed=args.retry,
                 retry_only=args.retry_only,
                 retry_fallbacks=args.retry_fallbacks,
-                fallback_only=args.fallback_only
+                fallback_only=args.fallback_only,
+                dry_run=args.dry_run
             )
         else:
             # Single artwork mode
             validate_single_mode_arguments(args)
+
+            if args.dry_run:
+                print(
+                    f"DRY RUN: Artist='{args.artist}', "
+                    f"Album='{args.album}', Title='{args.title if not args.album else None}'"
+                    f" -> would save to {args.output}"
+                )
+                sys.exit(0)
 
             downloader = AppleMusicArtworkDownloader(
                 verbose=args.verbose,

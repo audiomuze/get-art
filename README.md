@@ -26,6 +26,7 @@ By default, only brand-new folders are processed. Adding switches like `--overwr
 - [RapidFuzz](https://maxbachmann.github.io/RapidFuzz/) scoring ranks partial matches so the closest release wins whenever Apple doesn’t return an exact title hit.
 - Disc-aware parsing automatically falls back to the parent folder’s `Artist - Album` name whenever a subfolder looks like `CD1`, `Disc 2`, `Blu-Ray`, or other box-set media splits.
 - Built-in rate-limit handling: escalates to 5-second delays when Apple throttles and exits cleanly if throttling continues.
+- `--dry-run` mode shows each folder’s derived artist/album pairing without calling Apple so you can audit naming issues quickly.
 
 ## Installation
 
@@ -94,6 +95,7 @@ Other options:
 - `--output/-o` to change the default filename (`xfolder.jpg`).
 - `--verbose` to print lookup details.
 - `--throttle` to enforce a base delay between requests (default 1 s).
+- `--dry-run` to print the would-be lookup and exit without contacting Apple Music.
 
 ### 2. Batch Directory Mode (`--dir`)
 
@@ -128,7 +130,9 @@ Options:
 - `--overwrite` to replace existing `xfolder.jpg` files.
 - `--retry` to reprocess entries listed in `getart-failed-lookups.log` (stored alongside `getart.log` in the target directory).
 - `--retry-only` to ignore every other folder and process just the paths listed in `getart-failed-lookups.log`.
+- `--dry-run` to print each folder’s derived artist/album pairing (counts as skipped work so no files are written).
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
+- `--dry-run` to echo each entry’s derived artist/album combo and the destination path without performing any lookups.
 
 ### 3. File-Driven Mode (`--dirs2process`)
 
