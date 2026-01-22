@@ -28,6 +28,16 @@ By default, only brand-new folders are processed. Adding switches like `--overwr
 - Built-in rate-limit handling: escalates to 5-second delays when Apple throttles and exits cleanly if throttling continues.
 - `--dry-run` mode shows each folder’s derived artist/album pairing without calling Apple so you can audit naming issues quickly.
 
+### Dry Run Auditing
+
+Pass `--dry-run` to any mode (single lookup, `--dir`, or `--dirs2process`) to print the computed search terms and skip every network call and file write. This is handy when a batch suddenly tanks its success rate—you can dump the derived `Artist - Album` pairs, adjust folder names or tags, and then re-run for real.
+
+```bash
+python3 getart.py --dir /media/music --dry-run --verbose | tee dry-run.log
+```
+
+The summary line still appears, counting everything as skipped work, so you know the run only inspected metadata.
+
 ## Installation
 
 ### Option 1: `uv tool install` (recommended)
