@@ -447,31 +447,78 @@ def parse_folder_name(folder_name: str):
     # Remove anything in square brackets (including the brackets)
     album = re.sub(r'\s*\[.*?\]\s*', ' ', album).strip()
 
-    # Also remove anything in parentheses if you want
-    album = re.sub(r'\s*\(.*?\)\s*', ' ', album).strip()
+    # Remove parenthetical notes only when they clearly describe audio quality/format
+    album = _strip_quality_parentheses(album)
 
     # Clean up multiple spaces
     album = re.sub(r'\s+', ' ', album)
+    album = _remove_audio_format_tokens(album)
     album = _strip_quality_suffixes(album)
 
     return artist, album
 
 
 # Descriptors that represent file/encoding quality rather than the actual album title
+QUALITY_KEYWORDS = (
+    "hi-res",
+    "hi res",
+    "hi-resolution",
+    "hi definition",
+    "hi-def",
+    "high-res",
+    "24bit",
+    "32bit",
+    "24/96",
+    "24/192",
+    "24-96",
+    "24-192",
+    "24 96",
+    "24 192",
+    "dsd",
+    "mqa",
+    "sacd",
+    "uhd",
+    "uhq"
+)
+
+FORMAT_KEYWORDS = (
+    "flac",
+    "alac",
+    "aac",
+    "mp3",
+    "mp4",
+    "m4a",
+    "m4b",
+    "ogg",
+    "opus",
+    "wav",
+    "wave",
+    "aiff",
+    "aif",
+    "dsf",
+    "dff",
+    "ape",
+    "wv",
+    "wma",
+    "pcm",
+    "cd",
+    "vinyl",
+    "blu-ray",
+    "bluray",
+    "dvd"
+)
+
 QUALITY_SUFFIX_PATTERN = re.compile(
-    r'(?:\s*[-–—]\s*)?(?:'
-    r'hi[-\s]?res(?:olution|olution audio| audio)?'
-    r'|hi[-\s]?def(?:inition)?'
-    r'|high[-\s]?res'
-    r'|24[-\s]?bit'
-    r'|32[-\s]?bit'
-    r'|24\s*/\s*96'
-    r'|24\s*/\s*192'
-    r'|24[-\s]?96'
-    r'|24[-\s]?192'
-    r'|dsd'
-    r'|mqa'
+    r'(?:\s*[-–—]\s*)?(?:' +
+    r'|'.join(re.escape(term) for term in QUALITY_KEYWORDS) +
     r')\s*$',
+    re.IGNORECASE
+)
+
+AUDIO_FORMAT_PATTERN = re.compile(
+    r'(?:\s*[-–—_/]*\s*)(?:' +
+    r'|'.join(re.escape(term) for term in FORMAT_KEYWORDS) +
+    r')(?:\s+audio|\s+rip|\s+version)?',
     re.IGNORECASE
 )
 
@@ -486,6 +533,31 @@ def _strip_quality_suffixes(text: str) -> str:
             break
         cleaned = new
     return re.sub(r'\s+', ' ', cleaned)
+
+
+def _looks_like_quality_note(note: str) -> bool:
+    normalized = note.strip().lower()
+    if not normalized:
+        return False
+    for keyword in QUALITY_KEYWORDS + FORMAT_KEYWORDS:
+        if keyword.replace('-', ' ') in normalized.replace('-', ' '):
+            return True
+    return False
+
+
+def _strip_quality_parentheses(text: str) -> str:
+    """Remove parentheses that only describe format/quality, keep others."""
+    def replacer(match):
+        inner = match.group(1)
+        return ' ' if _looks_like_quality_note(inner) else f"({inner})"
+
+    return re.sub(r'\(([^)]*)\)', replacer, text)
+
+
+def _remove_audio_format_tokens(text: str) -> str:
+    """Remove standalone audio format tokens wherever they appear."""
+    cleaned = AUDIO_FORMAT_PATTERN.sub(' ', text)
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 
 def sanitize_filename(name: str) -> str:
