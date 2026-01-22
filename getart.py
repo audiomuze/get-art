@@ -452,8 +452,40 @@ def parse_folder_name(folder_name: str):
 
     # Clean up multiple spaces
     album = re.sub(r'\s+', ' ', album)
+    album = _strip_quality_suffixes(album)
 
     return artist, album
+
+
+# Descriptors that represent file/encoding quality rather than the actual album title
+QUALITY_SUFFIX_PATTERN = re.compile(
+    r'(?:\s*[-–—]\s*)?(?:'
+    r'hi[-\s]?res(?:olution|olution audio| audio)?'
+    r'|hi[-\s]?def(?:inition)?'
+    r'|high[-\s]?res'
+    r'|24[-\s]?bit'
+    r'|32[-\s]?bit'
+    r'|24\s*/\s*96'
+    r'|24\s*/\s*192'
+    r'|24[-\s]?96'
+    r'|24[-\s]?192'
+    r'|dsd'
+    r'|mqa'
+    r')\s*$',
+    re.IGNORECASE
+)
+
+
+def _strip_quality_suffixes(text: str) -> str:
+    """Remove trailing format/quality descriptors (Hi-Res, 24Bit, etc.)."""
+    cleaned = text
+    # Remove successive quality descriptors if multiple are appended.
+    while True:
+        new = QUALITY_SUFFIX_PATTERN.sub('', cleaned).strip()
+        if new == cleaned:
+            break
+        cleaned = new
+    return re.sub(r'\s+', ' ', cleaned)
 
 
 def sanitize_filename(name: str) -> str:
