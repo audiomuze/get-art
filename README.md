@@ -132,7 +132,6 @@ Options:
 - `--retry-only` to ignore every other folder and process just the paths listed in `getart-failed-lookups.log`.
 - `--dry-run` to print each folder’s derived artist/album pairing (counts as skipped work so no files are written).
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
-- `--dry-run` to echo each entry’s derived artist/album combo and the destination path without performing any lookups.
 
 ### 3. File-Driven Mode (`--dirs2process`)
 
@@ -158,6 +157,7 @@ Behavior:
 - If a listed folder exists, artwork is saved inside that folder as `xfolder.jpg` (respecting `--overwrite`).
 - If a folder is missing, artwork is saved to the directory you launched the script from using the filename `Artist - Album xfolder.jpg` (illegal filename characters are sanitized automatically).
 - Successful entries are logged to `getart.log` in the directory where you launched the script, so future runs can skip them unless you pass `--ignore-log`. Skip notifications only print when `--verbose` is set.
+- `--dry-run` echoes each entry’s derived artist/album combo and the destination path so you can confirm naming before any lookup happens.
 - Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`. As with batch mode, the skip notice is quiet unless `--verbose` is active.
 - Partial Apple matches populate `getart-fallback-lookups.log` beside the other logs so you can revisit them with `--retry-fallbacks`/`--fallback-only` without reprocessing every entry.
 - Pair `--retry-only` with `--dirs2process` when you want the file-driven mode to run exclusively on paths that are already captured in `getart-failed-lookups.log`.
