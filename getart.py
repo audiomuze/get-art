@@ -1087,19 +1087,51 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     if fallback_only:
         retry_fallbacks = True
 
-    subfolders = [
+    def _directory_contains_audio_files(folder_path: str) -> bool:
+        try:
+            for entry in os.listdir(folder_path):
+                candidate = os.path.join(folder_path, entry)
+                if not os.path.isfile(candidate):
+                    continue
+                _, ext = os.path.splitext(entry)
+                if ext.lower() in SUPPORTED_AUDIO_EXTENSIONS:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    discovered_subfolders = [
         item for item in os.listdir(directory)
         if os.path.isdir(os.path.join(directory, item))
     ]
+    discovered_subfolders = sorted(discovered_subfolders, key=str.casefold)
 
-    total = len(subfolders)
+    folders_to_process: list[tuple[str, str]]
+    if not discovered_subfolders and _directory_contains_audio_files(directory):
+        folder_label = os.path.basename(directory) or directory
+        folders_to_process = [(folder_label, directory)]
+        if verbose:
+            print(
+                "No subfolders found, but audio files exist in the target directory; processing the directory itself."
+            )
+    else:
+        folders_to_process = [
+            (folder_name, os.path.join(directory, folder_name))
+            for folder_name in discovered_subfolders
+        ]
+
+    total = len(folders_to_process)
     success = 0
     fallback_successes = 0
     fallback_successes = 0
     failed = 0
     skipped = 0
 
-    print(f"Found {total} subfolder(s) in '{directory}'")
+    if folders_to_process and folders_to_process[0][1] == directory and total == 1 and not discovered_subfolders:
+        print(f"Found 0 subfolder(s) in '{directory}'")
+        print(f"Processing '{directory}' as a single folder")
+    else:
+        print(f"Found {total} subfolder(s) in '{directory}'")
     if os.path.exists(logger.log_file):
         print(f"Success log found: {logger.log_file}")
         print(f"Previously successful: {len(logger.successful_folders)} folder(s)")
@@ -1114,8 +1146,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         else:
             print(prefix)
 
-    for i, folder in enumerate(subfolders, 1):
-        folder_path = os.path.join(directory, folder)
+    for i, (folder, folder_path) in enumerate(folders_to_process, 1):
         is_failed_entry = logger.is_failed(folder_path)
         is_fallback_entry = logger.is_fallback(folder_path)
 
