@@ -522,9 +522,13 @@ QUALITY_SUFFIX_PATTERN = re.compile(
 )
 
 AUDIO_FORMAT_PATTERN = re.compile(
-    r'(?:\s*[-–—_/]*\s*)(?:' +
+    r'(?<![^\W_])'                    # not preceded by a letter/digit (underscore allowed)
+    r'(?:\s*[-–—_/]*\s*)?'           # optional separators like " - ", "_", "/"
+    r'(?:' +
     r'|'.join(re.escape(term) for term in FORMAT_KEYWORDS) +
-    r')(?:\s+audio|\s+rip|\s+version)?',
+    r')'
+    r'(?:\s+(?:audio|rip|version))?'  # optional suffix words
+    r'(?![^\W_])',                    # not followed by a letter/digit
     re.IGNORECASE
 )
 
@@ -550,8 +554,13 @@ def _looks_like_quality_note(note: str) -> bool:
     normalized = note.strip().lower()
     if not normalized:
         return False
+
+    # Compare using token-ish matching so "ape" does not match inside "shape".
+    normalized = re.sub(r'[-–—]', ' ', normalized)
     for keyword in QUALITY_KEYWORDS + FORMAT_KEYWORDS:
-        if keyword.replace('-', ' ') in normalized.replace('-', ' '):
+        keyword_norm = keyword.lower().replace('-', ' ')
+        pattern = r'(?<![^\W_])' + re.escape(keyword_norm) + r'(?![^\W_])'
+        if re.search(pattern, normalized, flags=re.IGNORECASE):
             return True
     return False
 
@@ -568,6 +577,15 @@ def _strip_quality_parentheses(text: str) -> str:
 def _remove_audio_format_tokens(text: str) -> str:
     """Remove standalone audio format tokens wherever they appear."""
     cleaned = AUDIO_FORMAT_PATTERN.sub(' ', text)
+
+    # If the format token was attached via separators (e.g. "Album_FLAC" or
+    # "Album - FLAC"), the substitution can leave trailing/isolated separators.
+    # Remove only separators that are adjacent to whitespace or at the end so we
+    # don't clobber legitimate in-word punctuation (e.g. "Spider-Man").
+    cleaned = re.sub(r'[_–—\-./\\]+(?=\s)', ' ', cleaned)
+    cleaned = re.sub(r'(?<=\s)[_–—\-./\\]+', ' ', cleaned)
+    cleaned = re.sub(r'[_–—\-./\\]+$', '', cleaned)
+
     return re.sub(r'\s+', ' ', cleaned).strip()
 
 
