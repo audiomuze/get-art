@@ -1,0 +1,13 @@
+# get-art preferences
+# Command-line options take precedence over these defaults.
+[preferences]
+verbose = false
+throttle = 1.0
+ignore_log = false
+overwrite = false
+retry = false
+retry_only = false
+retry_fallbacks = false
+fallback_only = false
+dry_run = false
+allow_artist_only_match = false

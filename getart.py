@@ -4,16 +4,18 @@ Apple Music Artwork Downloader
 Retrieves high-quality artwork from Apple Music using artist/album information.
 """
 
+import argparse
 import json
-import time
 import os
 import re
-from urllib.request import Request, urlopen, HTTPError
-from urllib.parse import quote, urlparse
-import argparse
 import sys
-from datetime import datetime
+import time
 from collections.abc import Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlparse
+from urllib.request import HTTPError, Request, urlopen
 
 try:
     from importlib import metadata as importlib_metadata
@@ -29,6 +31,14 @@ try:
     from rapidfuzz import fuzz
 except ImportError:  # pragma: no cover - optional dependency
     fuzz = None
+
+try:  # Python 3.11+
+    import tomllib  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    try:
+        import tomli as tomllib  # type: ignore
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency
+        tomllib = None  # type: ignore
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -54,6 +64,73 @@ SUPPORTED_AUDIO_EXTENSIONS = {
 }
 
 FUZZY_SCORE_THRESHOLD = 90.0
+ARTIST_FUZZY_THRESHOLD = 96.0
+
+CONFIG_FILE = Path(__file__).with_name("getart.toml")
+CONFIG_SECTION = "preferences"
+CONFIG_DEFAULTS: dict[str, Any] = {
+    "verbose": False,
+    "throttle": 1.0,
+    "ignore_log": False,
+    "overwrite": False,
+    "retry": False,
+    "retry_only": False,
+    "retry_fallbacks": False,
+    "fallback_only": False,
+    "dry_run": False,
+    "allow_artist_only_match": False,
+}
+
+CONFIG_TEMPLATE = """# get-art preferences
+# Command-line options take precedence over these defaults.
+[preferences]
+verbose = false
+throttle = 1.0
+ignore_log = false
+overwrite = false
+retry = false
+retry_only = false
+retry_fallbacks = false
+fallback_only = false
+dry_run = false
+allow_artist_only_match = false
+"""
+
+
+def _ensure_config_file(path: Path = CONFIG_FILE) -> None:
+    """Create a default config file when one is missing."""
+    if path.exists():
+        return
+
+    try:
+        path.write_text(CONFIG_TEMPLATE + "\n", encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - disk permission issues
+        print(f"Warning: Could not create default config file at {path}: {exc}")
+
+
+def _load_preferences() -> dict[str, Any]:
+    """Load user preferences from the TOML config file."""
+    defaults = CONFIG_DEFAULTS.copy()
+
+    _ensure_config_file()
+    if tomllib is None:
+        return defaults
+
+    try:
+        with open(CONFIG_FILE, "rb") as fh:
+            data = tomllib.load(fh)
+    except FileNotFoundError:
+        return defaults
+    except Exception as exc:  # pragma: no cover - corrupt config
+        print(f"Warning: Could not parse config file {CONFIG_FILE}: {exc}")
+        return defaults
+
+    section = data.get(CONFIG_SECTION)
+    if isinstance(section, dict):
+        for key in defaults:
+            if key in section and section[key] is not None:
+                defaults[key] = section[key]
+    return defaults
 
 
 def _resolve_script_identity() -> tuple[str, str]:
@@ -84,16 +161,20 @@ class RateLimitExceededError(RuntimeError):
 class AppleMusicArtworkDownloader:
     """Self-contained Apple Music artwork downloader"""
 
-    def __init__(self, verbose: bool = False, throttle: float = 1):
+    def __init__(self, verbose: bool = False, throttle: float = 1,
+                 allow_artist_only_match: bool = False):
         """
         Initialize the downloader.
 
         Args:
             verbose: Enable detailed logging
             throttle: Seconds to wait if rate-limited
+            allow_artist_only_match: Permit saving the first artist-only match
+                when album/title comparisons fail
         """
         self.verbose = verbose
         self.throttle = throttle
+        self.allow_artist_only_match = allow_artist_only_match
 
         # Configuration matching your defaults
         self.ART_SIZE = 9999
@@ -243,13 +324,45 @@ class AppleMusicArtworkDownloader:
                 candidate in target
             ))
 
+        def tokenize(text: str) -> set[str]:
+            if not text:
+                return set()
+            return set(re.findall(r"[a-z0-9']+", text))
+
         def format_art_url(raw_url: str) -> str:
             if not raw_url:
                 return None
             return raw_url.replace('100x100bb', self.file_suffix)
 
+        artist_tokens = tokenize(artist_lower)
+
         def artist_matches(result_artist_lower: str) -> bool:
-            return is_overlap(artist_lower, result_artist_lower)
+            if not result_artist_lower:
+                return False
+            if artist_lower == result_artist_lower:
+                return True
+
+            direct_pattern = rf"\b{re.escape(artist_lower)}\b"
+            if re.search(direct_pattern, result_artist_lower):
+                return True
+
+            reverse_pattern = rf"\b{re.escape(result_artist_lower)}\b"
+            if re.search(reverse_pattern, artist_lower):
+                return True
+
+            if fuzz:
+                score = float(fuzz.token_set_ratio(artist_lower, result_artist_lower))
+                return score >= ARTIST_FUZZY_THRESHOLD
+
+            candidate_tokens = tokenize(result_artist_lower)
+            if not candidate_tokens or not artist_tokens:
+                return False
+            if artist_tokens == candidate_tokens:
+                return True
+            return (
+                artist_tokens.issubset(candidate_tokens) or
+                candidate_tokens.issubset(artist_tokens)
+            )
 
         def fuzzy_ratio(text_a: str, text_b: str) -> float:
             if not text_a or not text_b:
@@ -290,7 +403,7 @@ class AppleMusicArtworkDownloader:
 
             if best_fuzzy_candidate[0]:
                 return best_fuzzy_candidate[0], best_fuzzy_candidate[1]
-            if first_artist_match:
+            if self.allow_artist_only_match and first_artist_match:
                 return first_artist_match
             return None, None
 
@@ -327,7 +440,7 @@ class AppleMusicArtworkDownloader:
 
         if best_fuzzy_candidate[0]:
             return best_fuzzy_candidate[0], best_fuzzy_candidate[1]
-        if first_artist_match:
+        if self.allow_artist_only_match and first_artist_match:
             return first_artist_match
         return None, None
 
@@ -1072,7 +1185,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                       ignore_log: bool = False, overwrite: bool = False,
                       retry_failed: bool = False, retry_only: bool = False,
                       retry_fallbacks: bool = False, fallback_only: bool = False,
-                      dry_run: bool = False):
+                      dry_run: bool = False, allow_artist_only_match: bool = False):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -1083,6 +1196,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         ignore_log: Ignore previous successful processing log
         overwrite: Overwrite existing xfolder.jpg files
         retry_failed: Reprocess folders recorded in the failed lookup log
+        allow_artist_only_match: Permit saving artist-only matches when album/title fails
 
     Returns:
         dict: Statistics about processed folders
@@ -1097,7 +1211,11 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         print(f"ERROR: '{directory}' is not a directory")
         return {"total": 0, "success": 0, "failed": 0, "skipped": 0}
 
-    downloader = AppleMusicArtworkDownloader(verbose=verbose, throttle=throttle)
+    downloader = AppleMusicArtworkDownloader(
+        verbose=verbose,
+        throttle=throttle,
+        allow_artist_only_match=allow_artist_only_match
+    )
     logger = ProcessingLogger(directory)
 
     if retry_only:
@@ -1349,7 +1467,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                            overwrite: bool = False, ignore_log: bool = False,
                            retry_failed: bool = False, retry_only: bool = False,
                            retry_fallbacks: bool = False, fallback_only: bool = False,
-                           dry_run: bool = False) -> dict:
+                           dry_run: bool = False, allow_artist_only_match: bool = False) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -1357,7 +1475,11 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         print(f"ERROR: List file '{list_file}' does not exist")
         return {"total": 0, "success": 0, "failed": 0, "skipped": 0}
 
-    downloader = AppleMusicArtworkDownloader(verbose=verbose, throttle=throttle)
+    downloader = AppleMusicArtworkDownloader(
+        verbose=verbose,
+        throttle=throttle,
+        allow_artist_only_match=allow_artist_only_match
+    )
 
     raw_lines = []
     with open(list_file, 'r', encoding='utf-8') as f:
@@ -1618,7 +1740,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     }
 
 
-def parse_arguments():
+def parse_arguments(config_defaults: dict[str, Any] | None = None):
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         description="Download high-quality artwork from Apple Music",
@@ -1700,6 +1822,21 @@ Examples:
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument("--throttle", type=float, default=1, help="Seconds to wait between requests (default: 1)")
     parser.add_argument("--dry-run", action="store_true", help="Print derived lookup info without downloading artwork")
+    parser.add_argument(
+        "--allow-artist-only-match",
+        dest="allow_artist_only_match",
+        action="store_true",
+        help="Allow saving the first artist-only match when album/title matching fails"
+    )
+    parser.add_argument(
+        "--no-artist-only-match",
+        dest="allow_artist_only_match",
+        action="store_false",
+        help="Disable artist-only fallback matching (default)"
+    )
+
+    if config_defaults:
+        parser.set_defaults(**config_defaults)
 
     # If no arguments provided, show extended help
     if len(sys.argv) == 1:
@@ -1737,7 +1874,8 @@ def main():
     """Main entry point for command-line usage"""
     print(f"\n{SCRIPT_NAME} {SCRIPT_VERSION}\n")
 
-    args = parse_arguments()
+    config_defaults = _load_preferences()
+    args = parse_arguments(config_defaults)
 
     try:
         if args.dir:
@@ -1752,7 +1890,8 @@ def main():
                 retry_only=args.retry_only,
                 retry_fallbacks=args.retry_fallbacks,
                 fallback_only=args.fallback_only,
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                allow_artist_only_match=args.allow_artist_only_match
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -1766,7 +1905,8 @@ def main():
                 retry_only=args.retry_only,
                 retry_fallbacks=args.retry_fallbacks,
                 fallback_only=args.fallback_only,
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                allow_artist_only_match=args.allow_artist_only_match
             )
         else:
             # Single artwork mode
@@ -1782,7 +1922,8 @@ def main():
 
             downloader = AppleMusicArtworkDownloader(
                 verbose=args.verbose,
-                throttle=args.throttle
+                throttle=args.throttle,
+                allow_artist_only_match=args.allow_artist_only_match
             )
 
             success = downloader.save_artwork(
@@ -1800,7 +1941,8 @@ def main():
 
 # Helper function for easy import
 def get_apple_music_artwork(artist: str, album: str = None, title: str = None,
-                           verbose: bool = False, throttle: float = 1) -> bytes:
+                           verbose: bool = False, throttle: float = 1,
+                           allow_artist_only_match: bool = False) -> bytes:
     """
     Convenience function for importing.
 
@@ -1812,11 +1954,16 @@ def get_apple_music_artwork(artist: str, album: str = None, title: str = None,
         title: Track title (required unless album is specified)
         verbose: Enable verbose output
         throttle: Seconds to wait if rate-limited
+        allow_artist_only_match: Permit saving artist-only matches when album/title fails
     """
     if not album and not title:
         raise ValueError("You must specify either album or title")
 
-    downloader = AppleMusicArtworkDownloader(verbose=verbose, throttle=throttle)
+    downloader = AppleMusicArtworkDownloader(
+        verbose=verbose,
+        throttle=throttle,
+        allow_artist_only_match=allow_artist_only_match
+    )
     return downloader.get_artwork(artist, album, title)
 
 
