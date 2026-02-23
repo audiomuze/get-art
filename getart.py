@@ -66,6 +66,16 @@ SUPPORTED_AUDIO_EXTENSIONS = {
 FUZZY_SCORE_THRESHOLD = 90.0
 ARTIST_FUZZY_THRESHOLD = 96.0
 
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+
+
+def _format_rate_limit_tag(delay_seconds: float) -> str:
+    """Return a colored rate-limit tag showing the enforced delay."""
+    secs = max(delay_seconds, 0.0)
+    secs_str = f"{secs:.1f}".rstrip('0').rstrip('.') if secs else "0"
+    return f"[{ANSI_RED}Rate Limited, {secs_str}s{ANSI_RESET}]"
+
 CONFIG_FILE = Path(__file__).with_name("getart.toml")
 CONFIG_SECTION = "preferences"
 CONFIG_DEFAULTS: dict[str, Any] = {
@@ -1332,7 +1342,11 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     rate_limit_error = None
 
     def log_action(idx: int, folder_name: str, message: str | None = None) -> None:
-        prefix = f"[{idx}/{total}] {folder_name}"
+        rate_notice = ""
+        if downloader.rate_limit_escalated:
+            rate_notice = f" {_format_rate_limit_tag(downloader.current_delay)}"
+        prefix = f"[{idx}/{total}]" + rate_notice
+        prefix = f"{prefix} {folder_name}".strip()
         if message:
             print(f"{prefix} -> {message}")
         else:
@@ -1682,7 +1696,11 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         used_parent_metadata = info.get("used_parent_metadata")
         metadata_from_tags = info.get("metadata_from_tags")
         status_label = "Found" if folder_exists else "Missing"
-        print(f"[{idx}/{work_total}] [{status_label}] Entry: {entry}")
+        rate_notice = ""
+        if downloader.rate_limit_escalated:
+            rate_notice = f" {_format_rate_limit_tag(downloader.current_delay)}"
+        prefix = f"[{idx}/{work_total}]" + rate_notice
+        print(f"{prefix} [{status_label}] Entry: {entry}")
 
         if not valid:
             if used_parent_metadata:
