@@ -554,24 +554,24 @@ def parse_folder_name(folder_name: str):
         return None, None
 
     parts = folder_name.split(' - ', 1)
-    artist = parts[0].strip()
-    album = parts[1].strip()
-
-    # Remove anything in square brackets (including the brackets)
-    album = re.sub(r'\s*\[.*?\]\s*', ' ', album).strip()
-
-    # Remove bare year annotations like "(2025)"
-    album = _strip_year_parentheses(album)
-
-    # Remove parenthetical notes only when they clearly describe audio quality/format
-    album = _strip_quality_parentheses(album)
-
-    # Clean up multiple spaces
-    album = re.sub(r'\s+', ' ', album)
-    album = _remove_audio_format_tokens(album)
-    album = _strip_quality_suffixes(album)
+    artist = re.sub(r'\s+', ' ', parts[0]).strip()
+    album = _normalize_album_text(parts[1])
 
     return artist, album
+
+
+def _normalize_album_text(album_text: str) -> str:
+    """Normalize album metadata by stripping quality/format noise."""
+    if not album_text:
+        return ""
+
+    cleaned = re.sub(r'\s*\[.*?\]\s*', ' ', album_text).strip()
+    cleaned = _strip_year_parentheses(cleaned)
+    cleaned = _strip_quality_parentheses(cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = _remove_audio_format_tokens(cleaned)
+    cleaned = _strip_quality_suffixes(cleaned)
+    return cleaned.strip()
 
 
 # Descriptors that represent file/encoding quality rather than the actual album title
@@ -965,7 +965,7 @@ def _extract_tag_candidates(audio_path: str, verbose: bool = False):
         if not artist_clean:
             continue
         for album in album_values:
-            album_clean = re.sub(r'\s+', ' ', album.strip())
+            album_clean = _normalize_album_text(album)
             if not album_clean:
                 continue
             key = (artist_clean.lower(), album_clean.lower())
@@ -974,6 +974,36 @@ def _extract_tag_candidates(audio_path: str, verbose: bool = False):
             seen.add(key)
             combos.append((artist_clean, album_clean))
     return combos
+
+
+def _derive_metadata_from_tags(folder_path: str, verbose: bool = False) -> tuple[str | None, str | None, str | None]:
+    """Derive artist/album metadata from the first audio file's tags."""
+    if MutagenFile is None:
+        if verbose:
+            print("  TAG METADATA: Mutagen not installed; skipping metadata extraction")
+        return None, None, None
+
+    audio_path = _find_first_audio_file(folder_path)
+    if not audio_path:
+        if verbose:
+            print("  TAG METADATA: No supported audio files found for metadata extraction")
+        return None, None, None
+
+    if verbose:
+        print(f"  TAG METADATA: Deriving metadata from '{os.path.basename(audio_path)}'")
+
+    candidates = _extract_tag_candidates(audio_path, verbose=verbose)
+    if not candidates:
+        return None, None, None
+
+    artist_candidate, album_candidate = candidates[0]
+    artist_clean = re.sub(r'\s+', ' ', (artist_candidate or '').strip())
+    album_clean = _normalize_album_text(album_candidate or '')
+    if not artist_clean or not album_clean:
+        return None, None, None
+
+    source_label = f"audio tags from '{os.path.basename(audio_path)}'"
+    return artist_clean, album_clean, source_label
 
 
 def attempt_tag_based_fallback(folder_path: str, downloader: AppleMusicArtworkDownloader,
@@ -1347,6 +1377,16 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             continue
 
         artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(folder_path)
+        metadata_from_tags = False
+
+        if (not artist or not album) and os.path.isdir(folder_path):
+            tag_artist, tag_album, tag_source = _derive_metadata_from_tags(folder_path, verbose=verbose)
+            if tag_artist and tag_album:
+                artist = tag_artist
+                album = tag_album
+                metadata_source = tag_source
+                used_parent_metadata = False
+                metadata_from_tags = True
 
         output_path = os.path.join(folder_path, "xfolder.jpg")
         if os.path.exists(output_path) and not overwrite:
@@ -1367,7 +1407,9 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
             continue
 
         if verbose:
-            if used_parent_metadata and metadata_source:
+            if metadata_from_tags and metadata_source:
+                log_action(i, folder, f"Parsed via {metadata_source}: {artist} - {album}")
+            elif used_parent_metadata and metadata_source:
                 log_action(i, folder, f"Parsed via parent '{metadata_source}': {artist} - {album}")
             else:
                 log_action(i, folder, f"Parsed: {artist} - {album}")
@@ -1379,7 +1421,9 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
 
         if dry_run:
             info_msg = f"\n       {artist} - {album}\n"
-            if used_parent_metadata and metadata_source:
+            if metadata_from_tags and metadata_source:
+                info_msg += f" (derived from {metadata_source})"
+            elif used_parent_metadata and metadata_source:
                 info_msg += f" (derived from '{metadata_source}')"
             log_action(i, folder, info_msg)
             skipped += 1
@@ -1548,15 +1592,28 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             "album": album,
             "valid": bool(artist and album),
             "metadata_source": metadata_source,
-            "used_parent_metadata": used_parent_metadata
+            "used_parent_metadata": used_parent_metadata,
+            "metadata_from_tags": False
         }
+
+        if not info["valid"] and folder_exists:
+            tag_artist, tag_album, tag_source = _derive_metadata_from_tags(dir_path, verbose=verbose)
+            if tag_artist and tag_album:
+                info.update({
+                    "artist": tag_artist,
+                    "album": tag_album,
+                    "valid": True,
+                    "metadata_source": tag_source,
+                    "used_parent_metadata": False,
+                    "metadata_from_tags": True
+                })
 
         if info["valid"]:
             if folder_exists:
                 output_path = os.path.join(dir_path, "xfolder.jpg")
                 log_key = dir_path
             else:
-                filename = sanitize_filename(f"{artist} - {album} xfolder.jpg")
+                filename = sanitize_filename(f"{info['artist']} - {info['album']} xfolder.jpg")
                 output_path = os.path.join(cwd, filename)
                 log_key = output_path
             info.update({"output_path": output_path, "log_key": log_key})
@@ -1623,6 +1680,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         valid = info["valid"]
         metadata_source = info.get("metadata_source")
         used_parent_metadata = info.get("used_parent_metadata")
+        metadata_from_tags = info.get("metadata_from_tags")
         status_label = "Found" if folder_exists else "Missing"
         print(f"[{idx}/{work_total}] [{status_label}] Entry: {entry}")
 
@@ -1635,7 +1693,9 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             continue
 
         if verbose:
-            if used_parent_metadata and metadata_source:
+            if metadata_from_tags and metadata_source:
+                print(f"  Parsed via {metadata_source}: Artist='{artist}', Album='{album}'")
+            elif used_parent_metadata and metadata_source:
                 print(f"  Parsed (using parent folder '{metadata_source}'): Artist='{artist}', Album='{album}'")
             else:
                 print(f"  Parsed: Artist='{artist}', Album='{album}'")
@@ -1654,6 +1714,10 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                 f"  \n         {artist}' - '{album}"
                 f" -> would save to {output_path} (in {destination})"
             )
+            if metadata_from_tags and metadata_source:
+                msg += f"\n         (derived from {metadata_source})"
+            elif used_parent_metadata and metadata_source:
+                msg += f"\n         (derived from '{metadata_source}')"
             print(msg)
             skipped += 1
             continue
