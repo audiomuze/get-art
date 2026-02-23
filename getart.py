@@ -736,6 +736,60 @@ def _finalize_output_path(path: str, match_type: str) -> tuple[str, bool]:
     return fallback_path, True
 
 
+def _directory_contains_audio_files(folder_path: str) -> bool:
+    """Return True when folder contains at least one supported audio file."""
+    try:
+        for entry in os.listdir(folder_path):
+            candidate = os.path.join(folder_path, entry)
+            if not os.path.isfile(candidate):
+                continue
+            _, ext = os.path.splitext(entry)
+            if ext.lower() in SUPPORTED_AUDIO_EXTENSIONS:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _folder_meets_naming_rules(folder_path: str) -> bool:
+    """Return True when folder name (or its parent when disc-like) parses as Artist - Album."""
+    normalized = (folder_path or '').rstrip('/\\')
+    folder_name = os.path.basename(normalized) or ''
+    artist, album = parse_folder_name(folder_name)
+    if artist and album:
+        return True
+
+    parent_path = os.path.dirname(normalized)
+    parent_name = os.path.basename(parent_path) or ''
+    if parent_name and _looks_like_disc_folder(folder_name):
+        parent_artist, parent_album = parse_folder_name(parent_name)
+        return bool(parent_artist and parent_album)
+    return False
+
+
+def _collect_processable_folders(root_path: str) -> list[tuple[str, str]]:
+    """Walk the directory tree and collect folders that satisfy naming rules."""
+    normalized_root = os.path.abspath(root_path)
+    candidates: list[tuple[str, str]] = []
+
+    for current_root, dirnames, _ in os.walk(normalized_root):
+        dirnames[:] = sorted(dirnames, key=str.casefold)
+        if _folder_meets_naming_rules(current_root):
+            rel_path = os.path.relpath(current_root, normalized_root)
+            if rel_path == ".":
+                folder_label = os.path.basename(normalized_root) or normalized_root
+            else:
+                folder_label = rel_path
+            candidates.append((folder_label, current_root))
+
+    if not candidates and _directory_contains_audio_files(normalized_root):
+        folder_label = os.path.basename(normalized_root) or normalized_root
+        candidates.append((folder_label, normalized_root))
+
+    candidates.sort(key=lambda item: item[1].casefold())
+    return candidates
+
+
 STRICT_DISC_KEYWORDS = (
     "cd",
     "disc",
@@ -1223,51 +1277,23 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     if fallback_only:
         retry_fallbacks = True
 
-    def _directory_contains_audio_files(folder_path: str) -> bool:
-        try:
-            for entry in os.listdir(folder_path):
-                candidate = os.path.join(folder_path, entry)
-                if not os.path.isfile(candidate):
-                    continue
-                _, ext = os.path.splitext(entry)
-                if ext.lower() in SUPPORTED_AUDIO_EXTENSIONS:
-                    return True
-        except OSError:
-            return False
-        return False
-
-    discovered_subfolders = [
-        item for item in os.listdir(directory)
-        if os.path.isdir(os.path.join(directory, item))
-    ]
-    discovered_subfolders = sorted(discovered_subfolders, key=str.casefold)
-
-    folders_to_process: list[tuple[str, str]]
-    if not discovered_subfolders and _directory_contains_audio_files(directory):
-        folder_label = os.path.basename(directory) or directory
-        folders_to_process = [(folder_label, directory)]
-        if verbose:
-            print(
-                "No subfolders found, but audio files exist in the target directory; processing the directory itself."
-            )
-    else:
-        folders_to_process = [
-            (folder_name, os.path.join(directory, folder_name))
-            for folder_name in discovered_subfolders
-        ]
-
+    folders_to_process = _collect_processable_folders(directory)
     total = len(folders_to_process)
+
+    if total == 0:
+        print(f"Found 0 folders matching naming rules under '{directory}'")
+        return {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+
     success = 0
     fallback_successes = 0
     fallback_successes = 0
     failed = 0
     skipped = 0
 
-    if folders_to_process and folders_to_process[0][1] == directory and total == 1 and not discovered_subfolders:
-        print(f"Found 0 subfolder(s) in '{directory}'")
-        print(f"Processing '{directory}' as a single folder")
+    if total == 1 and folders_to_process[0][1] == directory:
+        print(f"Found 1 folder to process (root '{directory}')")
     else:
-        print(f"Found {total} subfolder(s) in '{directory}'")
+        print(f"Found {total} folder(s) matching naming rules under '{directory}'")
     if os.path.exists(logger.log_file):
         print(f"Success log found: {logger.log_file}")
         print(f"Previously successful: {len(logger.successful_folders)} folder(s)")
@@ -1760,6 +1786,11 @@ Modes of operation:
       Each line should contain one folder path (comments/blank lines ignored)
       Missing folders are saved into the current working directory as
       "Artist - Album xfolder.jpg"
+
+Dependencies:
+    Tag-based retries (used to salvage folders whose names do not parse cleanly)
+    require the optional "mutagen" package. When Mutagen is not installed those
+    fallbacks are skipped entirely.
 
 Success Log:
   In batch mode, a success log file (artwork_downloader.log) is created in the --dir directory.
