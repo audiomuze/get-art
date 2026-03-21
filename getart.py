@@ -76,6 +76,7 @@ ANSI_RESET = "\033[0m"
 
 ARTWORK_TARGET_STEMS = {"folder", "cover", "xfolder", "xfolder_fallback"}
 ARTWORK_VALID_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+DEFAULT_CANONICAL_ARTWORK_STEM = "folder"
 NOT_DUPE_PREFIX = "_not_dupe_"
 DEFAULT_DEDUPE_SIMILARITY = 200
 
@@ -100,6 +101,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "dry_run": False,
     "allow_artist_only_match": False,
     "dedupe_artwork": True,
+    "canonical_artwork_stem": DEFAULT_CANONICAL_ARTWORK_STEM,
 }
 
 CONFIG_TEMPLATE = """# get-art preferences
@@ -116,6 +118,7 @@ fallback_only = false
 dry_run = false
 allow_artist_only_match = false
 dedupe_artwork = true
+canonical_artwork_stem = "folder"
 """
 
 
@@ -152,7 +155,24 @@ def _load_preferences() -> dict[str, Any]:
         for key in defaults:
             if key in section and section[key] is not None:
                 defaults[key] = section[key]
+    defaults["canonical_artwork_stem"] = _normalize_canonical_stem(
+        defaults.get("canonical_artwork_stem")
+    )
     return defaults
+
+
+def _normalize_canonical_stem(value: Any) -> str:
+    """Return a sanitized filename stem for canonical artwork outputs."""
+    candidate = DEFAULT_CANONICAL_ARTWORK_STEM
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned:
+            stem, _ = os.path.splitext(cleaned)
+            candidate = stem or cleaned
+
+    candidate = re.sub(r'[<>:"/\\|?*]', '_', candidate)
+    candidate = re.sub(r"\s+", '_', candidate).strip('_')
+    return candidate or DEFAULT_CANONICAL_ARTWORK_STEM
 
 
 def _resolve_script_identity() -> tuple[str, str]:
@@ -758,8 +778,16 @@ def _finalize_output_path(path: str, match_type: str) -> tuple[str, bool]:
     return fallback_path, True
 
 
-def _collect_artwork_candidates(folder: Path) -> list[Path]:
+def _collect_artwork_candidates(
+    folder: Path,
+    canonical_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM,
+) -> list[Path]:
     """Return artwork files that match the canonical stems/extensions."""
+    allowed_stems = {stem.lower() for stem in ARTWORK_TARGET_STEMS}
+    normalized_canonical = _normalize_canonical_stem(canonical_stem).lower()
+    allowed_stems.add(normalized_canonical)
+    allowed_stems.add(f"{normalized_canonical}_fallback")
+
     candidates: list[Path] = []
     try:
         for entry in folder.iterdir():
@@ -767,7 +795,7 @@ def _collect_artwork_candidates(folder: Path) -> list[Path]:
                 continue
             if entry.suffix.lower() not in ARTWORK_VALID_EXTS:
                 continue
-            if entry.stem.lower() in ARTWORK_TARGET_STEMS:
+            if entry.stem.lower() in allowed_stems:
                 candidates.append(entry)
     except FileNotFoundError:
         return []
@@ -775,6 +803,7 @@ def _collect_artwork_candidates(folder: Path) -> list[Path]:
 
 
 def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUPE_SIMILARITY,
+                            canonical_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM,
                             dry_run: bool = False, verbose: bool = False) -> tuple[str | None, list[str]]:
     """Promote the highest-quality canonical artwork inside folder_path.
 
@@ -783,6 +812,7 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
     """
     folder = Path(folder_path)
     messages: list[str] = []
+    canonical_stem = _normalize_canonical_stem(canonical_stem)
 
     def _log(message: str) -> None:
         if verbose:
@@ -790,7 +820,7 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
     if not folder.is_dir():
         return None, messages
 
-    candidates = _collect_artwork_candidates(folder)
+    candidates = _collect_artwork_candidates(folder, canonical_stem)
     if not candidates:
         return None, messages
 
@@ -821,7 +851,7 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
                     except Exception as exc:  # pragma: no cover - filesystem issues
                         _log(f"[!] Error deleting {file_path.name}: {exc}")
 
-    remaining = _collect_artwork_candidates(folder)
+    remaining = _collect_artwork_candidates(folder, canonical_stem)
     if not remaining:
         return None, messages
 
@@ -834,7 +864,7 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
     remaining.sort(key=_file_size, reverse=True)
     best_file = remaining[0]
     suffix = best_file.suffix or ".jpg"
-    canonical_target = folder / f"folder{suffix}"
+    canonical_target = folder / f"{canonical_stem}{suffix}"
 
     def _rename(source: Path, destination: Path, description: str):
         if dry_run:
@@ -859,7 +889,7 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
 
     # Refresh candidates to reflect the current on-disk state so we don't
     # accidentally re-tag the newly promoted canonical file.
-    updated_candidates = _collect_artwork_candidates(folder)
+    updated_candidates = _collect_artwork_candidates(folder, canonical_stem)
 
     def _is_canonical(path: Path) -> bool:
         try:
@@ -1416,7 +1446,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                       retry_failed: bool = False, retry_only: bool = False,
                       retry_fallbacks: bool = False, fallback_only: bool = False,
                       dry_run: bool = False, allow_artist_only_match: bool = False,
-                      dedupe_artwork: bool = True):
+                      dedupe_artwork: bool = True,
+                      canonical_artwork_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -1429,11 +1460,13 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         retry_failed: Reprocess folders recorded in the failed lookup log
         allow_artist_only_match: Permit saving artist-only matches when album/title fails
         dedupe_artwork: Normalize cover filenames and delete obvious duplicates after saving new art
+        canonical_artwork_stem: Preferred filename stem for definitive artwork (from TOML)
 
     Returns:
         dict: Statistics about processed folders
     """
     directory = os.path.abspath(directory)
+    canonical_artwork_stem = _normalize_canonical_stem(canonical_artwork_stem)
 
     if not os.path.exists(directory):
         print(f"ERROR: Directory '{directory}' does not exist")
@@ -1598,6 +1631,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     canonical_path, dedupe_messages = dedupe_artwork_variants(
                         folder_path,
                         similarity=DEFAULT_DEDUPE_SIMILARITY,
+                        canonical_stem=canonical_artwork_stem,
                         verbose=verbose
                     )
                     if canonical_path:
@@ -1639,6 +1673,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                         canonical_path, dedupe_messages = dedupe_artwork_variants(
                             folder_path,
                             similarity=DEFAULT_DEDUPE_SIMILARITY,
+                            canonical_stem=canonical_artwork_stem,
                             verbose=verbose
                         )
                         if canonical_path:
@@ -1712,9 +1747,11 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                            retry_failed: bool = False, retry_only: bool = False,
                            retry_fallbacks: bool = False, fallback_only: bool = False,
                            dry_run: bool = False, allow_artist_only_match: bool = False,
-                           dedupe_artwork: bool = True) -> dict:
+                           dedupe_artwork: bool = True,
+                           canonical_artwork_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
+    canonical_artwork_stem = _normalize_canonical_stem(canonical_artwork_stem)
 
     if not os.path.exists(list_file):
         print(f"ERROR: List file '{list_file}' does not exist")
@@ -1919,6 +1956,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     canonical_path, dedupe_messages = dedupe_artwork_variants(
                         folder_path,
                         similarity=DEFAULT_DEDUPE_SIMILARITY,
+                        canonical_stem=canonical_artwork_stem,
                         verbose=verbose
                     )
                     if canonical_path:
@@ -1964,6 +2002,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                         canonical_path, dedupe_messages = dedupe_artwork_variants(
                             folder_path,
                             similarity=DEFAULT_DEDUPE_SIMILARITY,
+                            canonical_stem=canonical_artwork_stem,
                             verbose=verbose
                         )
                         if canonical_path:
@@ -2143,10 +2182,10 @@ Examples:
         help="Force-enable artwork deduplication even if disabled in config"
     )
 
-    if config_defaults:
-        parser.set_defaults(**config_defaults)
-    else:
-        parser.set_defaults(dedupe_artwork=True)
+    defaults = dict(config_defaults or {})
+    defaults.setdefault("dedupe_artwork", True)
+    defaults.setdefault("canonical_artwork_stem", DEFAULT_CANONICAL_ARTWORK_STEM)
+    parser.set_defaults(**defaults)
 
     # If no arguments provided, show extended help
     if len(sys.argv) == 1:
@@ -2202,7 +2241,8 @@ def main():
                 fallback_only=args.fallback_only,
                 dry_run=args.dry_run,
                 allow_artist_only_match=args.allow_artist_only_match,
-                dedupe_artwork=args.dedupe_artwork
+                dedupe_artwork=args.dedupe_artwork,
+                canonical_artwork_stem=args.canonical_artwork_stem
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -2218,7 +2258,8 @@ def main():
                 fallback_only=args.fallback_only,
                 dry_run=args.dry_run,
                 allow_artist_only_match=args.allow_artist_only_match,
-                dedupe_artwork=args.dedupe_artwork
+                dedupe_artwork=args.dedupe_artwork,
+                canonical_artwork_stem=args.canonical_artwork_stem
             )
         else:
             # Single artwork mode
