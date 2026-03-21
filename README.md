@@ -21,6 +21,7 @@ By default, only brand-new folders are processed. Adding switches like `--overwr
 - Batch directory processing with automatic logging so previously successful folders are silently skipped (log messages only appear with `--verbose`) unless you opt in.
 - File-driven processing for curated folder lists, saving art either in-place or to the current working directory when folders are missing.
 - Separate success, failure, and fallback logs (`getart.log`, `getart-failed-lookups.log`, and `getart-fallback-lookups.log`) keep runs resumable; use `--retry`/`--retry-fallbacks` when you want to reattempt previously failed or partial matches.
+- Automatic difPy-powered deduplication keeps the sharpest `folder.*`/`cover.*` artwork per folder and tags the rest as `_not_dupe_*` (pass `--no-dedupe` to skip it).
 - Optional tag-based fallback: if [Mutagen](https://mutagen.readthedocs.io/) is installed, the script inspects the first audio file in a folder and cycles through its `albumartist`/`artist` tags when the folder name lookup fails.
 - Fuzzy Apple matches are quarantined: the artwork is saved as `xfolder_fallback.jpg`, not logged as successful, and can be revisited later.
 - [RapidFuzz](https://maxbachmann.github.io/RapidFuzz/) scoring ranks partial matches so the closest release wins whenever Apple doesn’t return an exact title hit.
@@ -141,6 +142,7 @@ Options:
 - `--retry` to reprocess entries listed in `getart-failed-lookups.log` (stored alongside `getart.log` in the target directory).
 - `--retry-only` to ignore every other folder and process just the paths listed in `getart-failed-lookups.log`.
 - `--dry-run` to print each folder’s derived artist/album pairing (counts as skipped work so no files are written).
+- `--no-dedupe` to keep existing `xfolder.*`/`cover.*` files untouched (dedupe is enabled by default).
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
 
 ### 3. File-Driven Mode (`--dirs2process`)
@@ -170,6 +172,7 @@ Behavior:
 - `--dry-run` echoes each entry’s derived artist/album combo and the destination path so you can confirm naming before any lookup happens.
 - Failed lookups are logged to `getart-failed-lookups.log` next to `getart.log` in the directory you launched the script from, and are skipped automatically unless you pass `--retry`. As with batch mode, the skip notice is quiet unless `--verbose` is active.
 - Partial Apple matches populate `getart-fallback-lookups.log` beside the other logs so you can revisit them with `--retry-fallbacks`/`--fallback-only` without reprocessing every entry.
+- Unless you pass `--no-dedupe`, each successful in-place save runs the same difPy-driven dedupe routine so only the best `folder.*` file remains per directory.
 - Pair `--retry-only` with `--dirs2process` when you want the file-driven mode to run exclusively on paths that are already captured in `getart-failed-lookups.log`.
 - No directories are created when entries are missing.
 

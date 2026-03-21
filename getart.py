@@ -32,6 +32,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     fuzz = None
 
+try:
+    import difPy  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    difPy = None  # type: ignore
+
 try:  # Python 3.11+
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
@@ -69,6 +74,11 @@ ARTIST_FUZZY_THRESHOLD = 96.0
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
 
+ARTWORK_TARGET_STEMS = {"folder", "cover", "xfolder", "xfolder_fallback"}
+ARTWORK_VALID_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+NOT_DUPE_PREFIX = "_not_dupe_"
+DEFAULT_DEDUPE_SIMILARITY = 200
+
 
 def _format_rate_limit_tag(delay_seconds: float) -> str:
     """Return a colored rate-limit tag showing the enforced delay."""
@@ -89,6 +99,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "fallback_only": False,
     "dry_run": False,
     "allow_artist_only_match": False,
+    "dedupe_artwork": True,
 }
 
 CONFIG_TEMPLATE = """# get-art preferences
@@ -104,6 +115,7 @@ retry_fallbacks = false
 fallback_only = false
 dry_run = false
 allow_artist_only_match = false
+dedupe_artwork = true
 """
 
 
@@ -746,6 +758,116 @@ def _finalize_output_path(path: str, match_type: str) -> tuple[str, bool]:
     return fallback_path, True
 
 
+def _collect_artwork_candidates(folder: Path) -> list[Path]:
+    """Return artwork files that match the canonical stems/extensions."""
+    candidates: list[Path] = []
+    try:
+        for entry in folder.iterdir():
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() not in ARTWORK_VALID_EXTS:
+                continue
+            if entry.stem.lower() in ARTWORK_TARGET_STEMS:
+                candidates.append(entry)
+    except FileNotFoundError:
+        return []
+    return candidates
+
+
+def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUPE_SIMILARITY,
+                            dry_run: bool = False, verbose: bool = False) -> tuple[str | None, list[str]]:
+    """Promote the highest-quality canonical artwork inside folder_path.
+
+    Returns (canonical_path, messages). canonical_path is None when no eligible
+    artwork exists or when operations failed; messages describe performed steps.
+    """
+    folder = Path(folder_path)
+    messages: list[str] = []
+
+    def _log(message: str) -> None:
+        if verbose:
+            messages.append(message)
+    if not folder.is_dir():
+        return None, messages
+
+    candidates = _collect_artwork_candidates(folder)
+    if not candidates:
+        return None, messages
+
+    if len(candidates) >= 2:
+        if difPy is None:
+            _log("DEDUP: difPy not installed; skipping similarity checks")
+        else:
+            try:
+                file_paths = [str(p) for p in candidates]
+                search = difPy.build(file_paths, in_folder=False)
+                results = difPy.search(search, similarity=similarity, same_dim=False)
+                lower_quality = [
+                    Path(file_path) for file_path in getattr(results, "lower_quality", [])
+                    if Path(file_path).parent == folder
+                ]
+            except Exception as exc:  # pragma: no cover - difPy runtime errors
+                lower_quality = []
+                _log(f"DEDUP: difPy error; skipping quality-based deletions ({exc})")
+
+            if lower_quality:
+                for file_path in lower_quality:
+                    if dry_run:
+                        _log(f"[-] Would delete lower-res duplicate: {file_path.name}")
+                        continue
+                    try:
+                        file_path.unlink()
+                        _log(f"[-] Deleting lower-res duplicate: {file_path.name}")
+                    except Exception as exc:  # pragma: no cover - filesystem issues
+                        _log(f"[!] Error deleting {file_path.name}: {exc}")
+
+    remaining = _collect_artwork_candidates(folder)
+    if not remaining:
+        return None, messages
+
+    def _file_size(entry: Path) -> int:
+        try:
+            return entry.stat().st_size
+        except OSError:
+            return 0
+
+    remaining.sort(key=_file_size, reverse=True)
+    best_file = remaining[0]
+    suffix = best_file.suffix or ".jpg"
+    canonical_target = folder / f"folder{suffix}"
+
+    def _rename(source: Path, destination: Path, description: str):
+        if dry_run:
+            _log(f"[*] Would {description}: {source.name} -> {destination.name}")
+            return True
+        try:
+            source.rename(destination)
+            _log(f"[*] {description}: {source.name} -> {destination.name}")
+            return True
+        except Exception as exc:  # pragma: no cover - filesystem issues
+            _log(f"[!] Error renaming {source.name} -> {destination.name}: {exc}")
+            return False
+
+    if best_file.exists() and best_file.resolve() != canonical_target.resolve():
+        if canonical_target.exists() and canonical_target != best_file:
+            preserve_target = folder / f"{NOT_DUPE_PREFIX}{canonical_target.name}"
+            if canonical_target.exists():
+                _rename(canonical_target, preserve_target, "preserve existing canonical file")
+        _rename(best_file, canonical_target, "promote best artwork to canonical name")
+    else:
+        canonical_target = best_file
+
+    for other in remaining[1:]:
+        if other.name.startswith(NOT_DUPE_PREFIX):
+            continue
+        if not other.exists():
+            continue
+        new_name = folder / f"{NOT_DUPE_PREFIX}{other.name}"
+        _rename(other, new_name, "tag non-canonical artwork")
+
+    return str(canonical_target), messages
+
+
 def _directory_contains_audio_files(folder_path: str) -> bool:
     """Return True when folder contains at least one supported audio file."""
     try:
@@ -1279,7 +1401,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                       ignore_log: bool = False, overwrite: bool = False,
                       retry_failed: bool = False, retry_only: bool = False,
                       retry_fallbacks: bool = False, fallback_only: bool = False,
-                      dry_run: bool = False, allow_artist_only_match: bool = False):
+                      dry_run: bool = False, allow_artist_only_match: bool = False,
+                      dedupe_artwork: bool = True):
     """
     Process all subfolders in directory and download artwork for each.
 
@@ -1291,6 +1414,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
         overwrite: Overwrite existing xfolder.jpg files
         retry_failed: Reprocess folders recorded in the failed lookup log
         allow_artist_only_match: Permit saving artist-only matches when album/title fails
+        dedupe_artwork: Normalize cover filenames and delete obvious duplicates after saving new art
 
     Returns:
         dict: Statistics about processed folders
@@ -1455,6 +1579,15 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 final_path, used_fallback_name = _finalize_output_path(
                     output_path, downloader.last_match_type
                 )
+                dedupe_messages: list[str] = []
+                if dedupe_artwork:
+                    canonical_path, dedupe_messages = dedupe_artwork_variants(
+                        folder_path,
+                        similarity=DEFAULT_DEDUPE_SIMILARITY,
+                        verbose=verbose
+                    )
+                    if canonical_path:
+                        final_path = canonical_path
 
                 if used_fallback_name:
                     fallback_successes += 1
@@ -1475,6 +1608,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     log_action(i, folder, f"SUCCESS: saved to {final_path}")
                     logger.log_success(folder_path, artist, album, final_path)
                     logger.clear_failure(folder_path)
+                for message in dedupe_messages:
+                    log_action(i, folder, message)
             else:
                 fallback_success, fb_artist, fb_album, fallback_attempted = attempt_tag_based_fallback(
                     folder_path, downloader, output_path, verbose=verbose
@@ -1485,6 +1620,15 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                     final_path, used_fallback_name = _finalize_output_path(
                         output_path, downloader.last_match_type
                     )
+                    dedupe_messages: list[str] = []
+                    if dedupe_artwork:
+                        canonical_path, dedupe_messages = dedupe_artwork_variants(
+                            folder_path,
+                            similarity=DEFAULT_DEDUPE_SIMILARITY,
+                            verbose=verbose
+                        )
+                        if canonical_path:
+                            final_path = canonical_path
                     log_action(
                         i,
                         folder,
@@ -1504,6 +1648,8 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                         )
                         logger.clear_failure(folder_path)
                         log_action(i, folder, "NOTE: Partial Apple match via tags; logged for targeted retry.")
+                    for message in dedupe_messages:
+                        log_action(i, folder, message)
                 else:
                     failed += 1
                     reason = "Artwork not found"
@@ -1551,7 +1697,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                            overwrite: bool = False, ignore_log: bool = False,
                            retry_failed: bool = False, retry_only: bool = False,
                            retry_fallbacks: bool = False, fallback_only: bool = False,
-                           dry_run: bool = False, allow_artist_only_match: bool = False) -> dict:
+                           dry_run: bool = False, allow_artist_only_match: bool = False,
+                           dedupe_artwork: bool = True) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
 
@@ -1753,6 +1900,15 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                 final_path, used_fallback_name = _finalize_output_path(
                     output_path, downloader.last_match_type
                 )
+                dedupe_messages: list[str] = []
+                if dedupe_artwork and folder_exists:
+                    canonical_path, dedupe_messages = dedupe_artwork_variants(
+                        folder_path,
+                        similarity=DEFAULT_DEDUPE_SIMILARITY,
+                        verbose=verbose
+                    )
+                    if canonical_path:
+                        final_path = canonical_path
                 print(f"  SUCCESS: Artwork saved to {final_path} ({destination})")
                 if not used_fallback_name:
                     logger.log_success(log_key, artist, album, final_path)
@@ -1770,6 +1926,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     if log_key:
                         logger.clear_failure(log_key)
                     print("    NOTE: Partial Apple match; entry logged separately so you can target it later.")
+                for message in dedupe_messages:
+                    print(f"    {message}")
             else:
                 fallback_success = False
                 fallback_attempted = False
@@ -1787,6 +1945,15 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                     final_path, used_fallback_name = _finalize_output_path(
                         output_path, downloader.last_match_type
                     )
+                    dedupe_messages: list[str] = []
+                    if dedupe_artwork and folder_exists:
+                        canonical_path, dedupe_messages = dedupe_artwork_variants(
+                            folder_path,
+                            similarity=DEFAULT_DEDUPE_SIMILARITY,
+                            verbose=verbose
+                        )
+                        if canonical_path:
+                            final_path = canonical_path
                     print(
                         f"  SUCCESS: Artwork saved to {final_path} ({destination}) using tag fallback ({fb_artist} - {fb_album})"
                     )
@@ -1806,6 +1973,8 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                         if log_key:
                             logger.clear_failure(log_key)
                         print("    NOTE: Partial Apple match via tags; logged so you can retry when Apple improves.")
+                    for message in dedupe_messages:
+                        print(f"    {message}")
                 else:
                     failed += 1
                     reason = "Artwork not found"
@@ -1947,9 +2116,23 @@ Examples:
         action="store_false",
         help="Disable artist-only fallback matching (default)"
     )
+    parser.add_argument(
+        "--no-dedupe",
+        dest="dedupe_artwork",
+        action="store_false",
+        help="Skip post-download artwork deduplication and canonical renaming"
+    )
+    parser.add_argument(
+        "--dedupe",
+        dest="dedupe_artwork",
+        action="store_true",
+        help="Force-enable artwork deduplication even if disabled in config"
+    )
 
     if config_defaults:
         parser.set_defaults(**config_defaults)
+    else:
+        parser.set_defaults(dedupe_artwork=True)
 
     # If no arguments provided, show extended help
     if len(sys.argv) == 1:
@@ -2004,7 +2187,8 @@ def main():
                 retry_fallbacks=args.retry_fallbacks,
                 fallback_only=args.fallback_only,
                 dry_run=args.dry_run,
-                allow_artist_only_match=args.allow_artist_only_match
+                allow_artist_only_match=args.allow_artist_only_match,
+                dedupe_artwork=args.dedupe_artwork
             )
         elif getattr(args, "dirs2process", None):
             # File-driven mode
@@ -2019,7 +2203,8 @@ def main():
                 retry_fallbacks=args.retry_fallbacks,
                 fallback_only=args.fallback_only,
                 dry_run=args.dry_run,
-                allow_artist_only_match=args.allow_artist_only_match
+                allow_artist_only_match=args.allow_artist_only_match,
+                dedupe_artwork=args.dedupe_artwork
             )
         else:
             # Single artwork mode

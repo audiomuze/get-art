@@ -1,6 +1,6 @@
 [project]
 name = "get-art"
-version = "0.1.7"
+version = "0.1.8"
 description = "Apple Music artwork downloader with disc-aware parsing and tag fallbacks"
 readme = "README.md"
 authors = [{ name = "audiomuze" }]
@@ -8,7 +8,8 @@ license = { file = "LICENSE" }
 requires-python = ">=3.8"
 dependencies = [
     "rapidfuzz>=3.9",
-    "mutagen>=1.47"
+    "mutagen>=1.47",
+    "difPy>=4.2.1"
 ]
 
 [project.scripts]
