@@ -857,7 +857,21 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
     else:
         canonical_target = best_file
 
-    for other in remaining[1:]:
+    # Refresh candidates to reflect the current on-disk state so we don't
+    # accidentally re-tag the newly promoted canonical file.
+    updated_candidates = _collect_artwork_candidates(folder)
+
+    def _is_canonical(path: Path) -> bool:
+        try:
+            if canonical_target.exists() and path.resolve() == canonical_target.resolve():
+                return True
+        except FileNotFoundError:
+            pass
+        return path.name == canonical_target.name
+
+    for other in updated_candidates:
+        if _is_canonical(other):
+            continue
         if other.name.startswith(NOT_DUPE_PREFIX):
             continue
         if not other.exists():
