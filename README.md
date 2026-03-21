@@ -14,6 +14,25 @@ It does not embed images in file metadata.
 
 By default, only brand-new folders are processed. Adding switches like `--overwrite`, `--retry`, `--retry-fallbacks`, or their `*-only` counterparts lets you systematically whittle down failures and fuzzy matches without re-scraping your entire library.
 
+## Configuration (getart.toml)
+
+Every clone ships with a `getart.toml` that mirrors the built-in defaults. Command-line flags always win, but editing this file lets you establish permanent preferences for commonly toggled switches. The file lives next to `getart.py`; delete it to regenerate the stock template.
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `verbose` | Enable chatty logging without passing `--verbose`. | `false` |
+| `throttle` | Base delay (seconds) between Apple Music requests before any rate limiting kicks in. | `1.0` |
+| `ignore_log` | Treat previous `getart.log` successes as pending work in every batch/file run. | `false` |
+| `overwrite` | Replace existing `xfolder.jpg` files without supplying `--overwrite`. | `false` |
+| `retry` / `retry_only` | Opt into reprocessing failed entries (or exclusively failed entries) without flags. | `false` / `false` |
+| `retry_fallbacks` / `fallback_only` | Automatically include (or target only) partial matches from `getart-fallback-lookups.log`. | `false` / `false` |
+| `dry_run` | Audit derived metadata without contacting Apple by default. | `false` |
+| `allow_artist_only_match` | Permit the downloader to save the first artist-only Apple match when titles fail. | `false` |
+| `dedupe_artwork` | Run difPy-based canonicalization after each save. | `true` |
+| `canonical_artwork_stem` | Canonical filename stem for definitive artwork. Set this to something like `"cover"` to make the script promote the sharpest file to `cover.<ext>` (fallbacks still become `cover_fallback.<ext>`). This option is only configurable via TOML. | `"folder"` |
+
+Tip: numeric values accept floats/ints, booleans follow TOML’s lowercase `true`/`false`, and strings must be quoted. Invalid entries fall back to the defaults above after being sanitized (e.g., the canonical stem strips spaces/illegal filesystem characters automatically).
+
 ## Features
 
 - Retrieves cover art at 9999×9999 px (quality 100) by default.
