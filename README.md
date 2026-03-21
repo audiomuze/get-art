@@ -33,6 +33,28 @@ Every clone ships with a `getart.toml` that mirrors the built-in defaults. Comma
 
 Tip: numeric values accept floats/ints, booleans follow TOML’s lowercase `true`/`false`, and strings must be quoted. Invalid entries fall back to the defaults above after being sanitized (e.g., the canonical stem strips spaces/illegal filesystem characters automatically).
 
+### Example `getart.toml`
+
+Here is a minimal preferences block that keeps verbose logging on, shortens the default throttle, forces retries, and renames canonical artwork files to `cover.*` so dedupe operations promote to your preferred filename automatically:
+
+```toml
+[preferences]
+verbose = true
+throttle = 0.5
+ignore_log = false
+overwrite = false
+retry = true
+retry_only = false
+retry_fallbacks = false
+fallback_only = false
+dry_run = false
+allow_artist_only_match = false
+dedupe_artwork = true
+canonical_artwork_stem = "cover"
+```
+
+Copy this block into `getart.toml` (or tweak the existing file) and adjust the booleans/numbers to match your workflow. Removing the file regenerates the stock defaults on the next run.
+
 ## Features
 
 - Retrieves cover art at 9999×9999 px (quality 100) by default.
