@@ -1508,7 +1508,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     if os.path.exists(logger.log_file):
         print(f"Success log found: {logger.log_file}")
         print(f"Previously successful: {len(logger.successful_folders)} folder(s)")
-    print("-" * 60)
+    print()
 
     rate_limit_error = None
 
@@ -1718,7 +1718,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
     if rate_limit_error:
         print("Processing interrupted by rate limiting; summary reflects completed folders only.")
 
-    print("-" * 60)
+    print()
     if fallback_successes:
         definitive = success - fallback_successes
         print(
@@ -1789,7 +1789,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
         retry_fallbacks = True
 
     print(f"Loaded {total} path(s) from '{list_file}'")
-    print("-" * 60)
+    print()
 
     entry_infos = []
     for entry in raw_lines:
@@ -2048,7 +2048,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
     if rate_limit_error:
         print("Processing interrupted by rate limiting; summary reflects completed entries only.")
 
-    print("-" * 60)
+    print()
     if fallback_successes:
         definitive = success - fallback_successes
         print(
