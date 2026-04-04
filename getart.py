@@ -13,7 +13,7 @@ import time
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlparse
 from urllib.request import HTTPError, Request, urlopen
 
@@ -79,6 +79,7 @@ ARTWORK_VALID_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_CANONICAL_ARTWORK_STEM = "folder"
 NOT_DUPE_PREFIX = "_not_dupe_"
 DEFAULT_DEDUPE_SIMILARITY = 200
+DEFAULT_DEDUPE_PX_SIZE = 100
 
 
 def _format_rate_limit_tag(delay_seconds: float) -> str:
@@ -803,6 +804,7 @@ def _collect_artwork_candidates(
 
 
 def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUPE_SIMILARITY,
+                            px_size: int = DEFAULT_DEDUPE_PX_SIZE,
                             canonical_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM,
                             dry_run: bool = False, verbose: bool = False) -> tuple[str | None, list[str]]:
     """Promote the highest-quality canonical artwork inside folder_path.
@@ -830,8 +832,8 @@ def dedupe_artwork_variants(folder_path: str, *, similarity: int = DEFAULT_DEDUP
         else:
             try:
                 file_paths = [str(p) for p in candidates]
-                search = difPy.build(file_paths, in_folder=False)
-                results = difPy.search(search, similarity=similarity, same_dim=False)
+                search = difPy.build(file_paths, in_folder=False, px_size=px_size)
+                results = difPy.search(search, similarity=cast(Any, similarity), same_dim=False)
                 lower_quality = [
                     Path(file_path) for file_path in getattr(results, "lower_quality", [])
                     if Path(file_path).parent == folder
