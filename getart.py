@@ -123,6 +123,28 @@ canonical_artwork_stem = "folder"
 """
 
 
+def _folder_has_canonical_artwork(folder: Path, canonical_stem: str) -> bool:
+    """Return True when folder contains canonical_stem with a known artwork extension."""
+    expected_stem = _normalize_canonical_stem(canonical_stem).casefold()
+    if not expected_stem:
+        return False
+
+    try:
+        for entry in folder.iterdir():
+            if not entry.is_file():
+                continue
+            if entry.suffix.casefold() not in ARTWORK_VALID_EXTS:
+                continue
+            if entry.stem.casefold() == expected_stem:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+    return False
+
+
 def _ensure_config_file(path: Path = CONFIG_FILE) -> None:
     """Create a default config file when one is missing."""
     if path.exists():
@@ -1449,6 +1471,7 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                       retry_fallbacks: bool = False, fallback_only: bool = False,
                       dry_run: bool = False, allow_artist_only_match: bool = False,
                       dedupe_artwork: bool = True,
+                      skip_existing_canonical: bool = False,
                       canonical_artwork_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM):
     """
     Process all subfolders in directory and download artwork for each.
@@ -1562,6 +1585,17 @@ def process_directory(directory: str, verbose: bool = False, throttle: float = 0
                 )
             skipped += 1
             continue
+
+        if skip_existing_canonical and os.path.isdir(folder_path):
+            if _folder_has_canonical_artwork(Path(folder_path), canonical_artwork_stem):
+                if verbose:
+                    log_action(
+                        i,
+                        folder,
+                        f"SKIPPED: canonical artwork already exists ({canonical_artwork_stem}.*)"
+                    )
+                skipped += 1
+                continue
 
         artist, album, metadata_source, used_parent_metadata = derive_artist_album_from_path(folder_path)
         metadata_from_tags = False
@@ -1750,6 +1784,7 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
                            retry_fallbacks: bool = False, fallback_only: bool = False,
                            dry_run: bool = False, allow_artist_only_match: bool = False,
                            dedupe_artwork: bool = True,
+                           skip_existing_canonical: bool = False,
                            canonical_artwork_stem: str = DEFAULT_CANONICAL_ARTWORK_STEM) -> dict:
     """Process directories enumerated inside a text file."""
     list_file = os.path.abspath(list_file)
@@ -1901,6 +1936,12 @@ def process_directory_file(list_file: str, verbose: bool = False, throttle: floa
             rate_notice = f" {_format_rate_limit_tag(downloader.current_delay)}"
         prefix = f"[{idx}/{work_total}]" + rate_notice
         print(f"{prefix} [{status_label}] Entry: {entry}")
+
+        if folder_exists and skip_existing_canonical:
+            if _folder_has_canonical_artwork(Path(folder_path), canonical_artwork_stem):
+                print(f"  SKIPPED: canonical artwork already exists ({canonical_artwork_stem}.*)")
+                skipped += 1
+                continue
 
         if not valid:
             if used_parent_metadata:
@@ -2184,6 +2225,16 @@ Examples:
         help="Force-enable artwork deduplication even if disabled in config"
     )
 
+    parser.add_argument(
+        "--skip-existing",
+        dest="skip_existing_canonical",
+        action="store_true",
+        help=(
+            "Skip folders that already contain the canonical artwork filename "
+            "(e.g., folder.jpg)."
+        )
+    )
+
     defaults = dict(config_defaults or {})
     defaults.setdefault("dedupe_artwork", True)
     defaults.setdefault("canonical_artwork_stem", DEFAULT_CANONICAL_ARTWORK_STEM)
@@ -2244,6 +2295,7 @@ def main():
                 dry_run=args.dry_run,
                 allow_artist_only_match=args.allow_artist_only_match,
                 dedupe_artwork=args.dedupe_artwork,
+                skip_existing_canonical=args.skip_existing_canonical,
                 canonical_artwork_stem=args.canonical_artwork_stem
             )
         elif getattr(args, "dirs2process", None):
@@ -2261,6 +2313,7 @@ def main():
                 dry_run=args.dry_run,
                 allow_artist_only_match=args.allow_artist_only_match,
                 dedupe_artwork=args.dedupe_artwork,
+                skip_existing_canonical=args.skip_existing_canonical,
                 canonical_artwork_stem=args.canonical_artwork_stem
             )
         else:

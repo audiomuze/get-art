@@ -174,6 +174,7 @@ Flag reference:
 | `--retry-only` | Process only the failed-log entries. | `--retry` (implicitly enabled). | Automatically flips on `--retry` and skips everything else. |
 | `--retry-fallbacks` | Include folders captured in `getart-fallback-lookups.log`. | `--fallback-only` when you want to focus on partial matches. | Default runs skip these entries to avoid rewriting the same fallback art. |
 | `--fallback-only` | Process only the fallback-log entries. | Automatically implies `--retry-fallbacks`. | Mutually exclusive with `--retry-only`; perfect for polishing fuzzy matches. |
+| `--skip-existing` | Skip folders that already contain canonical artwork (e.g., `folder.*` or `cover.*`). | `--ignore-log` / `--retry*` when you want retries but still respect existing covers. | Uses the current `canonical_artwork_stem` setting to decide what counts as canonical. |
 
 Options:
 
@@ -184,6 +185,7 @@ Options:
 - `--retry-only` to ignore every other folder and process just the paths listed in `getart-failed-lookups.log`.
 - `--dry-run` to print each folder’s derived artist/album pairing (counts as skipped work so no files are written).
 - `--no-dedupe` to keep existing `xfolder.*`/`cover.*` files untouched (dedupe is enabled by default).
+- `--skip-existing` to skip folders that already contain canonical artwork (for example `folder.jpg`).
 - Logging file is stored inside the target directory. The script never creates or deletes folders; it only writes `xfolder.jpg` files when the target folder already exists.
 
 ### 3. File-Driven Mode (`--dirs2process`)
@@ -204,6 +206,7 @@ Flag reference:
 | `--retry-only` | Restrict processing to the failed log. | `--retry` (implicit). | Ignores every list entry that isn’t in `getart-failed-lookups.log`. |
 | `--retry-fallbacks` | Include folders captured in `getart-fallback-lookups.log`. | `--fallback-only` (implicit). | Fallback log sits next to `getart.log` in your current working dir. |
 | `--fallback-only` | Restrict processing to the fallback log. | `--retry-fallbacks` (implicit). | Mutually exclusive with `--retry-only`. |
+| `--skip-existing` | Skip folders that already contain canonical artwork (e.g., `folder.*`). | `--retry*` flags. | Uses the current `canonical_artwork_stem` setting. |
 
 Behavior:
 
